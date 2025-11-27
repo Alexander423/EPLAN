@@ -4,19 +4,38 @@ Main GUI application for EPLAN eVIEW Text Extractor.
 
 from __future__ import annotations
 
+import re
 import threading
 import tkinter as tk
 from tkinter import messagebox
 from typing import Optional
 
-from ..constants import BASE_URL
+from ..constants import BASE_URL, VERSION
 from ..core.cache import CacheManager
 from ..core.config import AppConfig, ConfigManager
 from ..core.extractor import SeleniumEPlanExtractor
 from ..utils.logging import get_logger
 from .panels import LogPanel, ProgressIndicator, StatusBar
 from .theme import Theme
-from .widgets import ModernButton, ModernCheckbox, ModernEntry
+from .widgets import (
+    ModernButton,
+    ModernCheckbox,
+    ModernEntry,
+    PasswordEntry,
+    ThemeToggle,
+    Tooltip,
+)
+
+
+def validate_email(email: str) -> bool:
+    """Validate email format."""
+    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email))
+
+
+def validate_project(project: str) -> bool:
+    """Validate project number (non-empty)."""
+    return len(project.strip()) >= 2
 
 
 class EPlanExtractorGUI:
@@ -24,10 +43,12 @@ class EPlanExtractorGUI:
     Modern professional GUI for the EPLAN eVIEW Text Extractor.
 
     Features:
-    - Dark theme with accent colors
+    - Dark/Light theme with toggle
     - Card-based layout
     - Progress step indicator
-    - Animated status updates
+    - Password visibility toggle
+    - Input validation
+    - Tooltips for help
     - Professional typography
     """
 
@@ -35,9 +56,9 @@ class EPlanExtractorGUI:
         """Initialize the GUI."""
         self.root = root
         self.root.title("EPLAN eVIEW Extractor")
-        self.root.geometry("700x800")
-        self.root.minsize(600, 700)
-        self.root.configure(bg=Theme.BG_PRIMARY)
+        self.root.geometry("720x850")
+        self.root.minsize(620, 750)
+        self.root.configure(bg=Theme.get_color("BG_PRIMARY"))
 
         # Try to set window icon (if available)
         try:
@@ -59,6 +80,8 @@ class EPlanExtractorGUI:
         self._headless_var = tk.BooleanVar(value=True)
         self._export_excel_var = tk.BooleanVar(value=True)
         self._export_csv_var = tk.BooleanVar(value=False)
+        self._save_credentials_var = tk.BooleanVar(value=True)
+        self._auto_open_file_var = tk.BooleanVar(value=False)
 
         self._setup_ui()
         self._load_config()
@@ -66,223 +89,347 @@ class EPlanExtractorGUI:
         # Register logger callback
         self._logger.add_callback(self._log_callback)
 
+        # Register theme observer
+        Theme.add_observer(self._on_theme_change)
+
     def _setup_ui(self) -> None:
         """Set up the modern user interface."""
         # Main container
-        main_container = tk.Frame(self.root, bg=Theme.BG_PRIMARY)
-        main_container.pack(fill="both", expand=True)
+        self._main_container = tk.Frame(self.root, bg=Theme.get_color("BG_PRIMARY"))
+        self._main_container.pack(fill="both", expand=True)
 
         # Header
-        self._create_header(main_container)
+        self._create_header(self._main_container)
 
         # Content area with scrolling
-        content_frame = tk.Frame(main_container, bg=Theme.BG_PRIMARY)
-        content_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        self._content_frame = tk.Frame(self._main_container, bg=Theme.get_color("BG_PRIMARY"))
+        self._content_frame.pack(fill="both", expand=True, padx=20, pady=10)
 
         # Credentials Card
-        self._create_credentials_card(content_frame)
+        self._create_credentials_card(self._content_frame)
 
         # Options Card
-        self._create_options_card(content_frame)
+        self._create_options_card(self._content_frame)
 
         # Progress Card
-        self._create_progress_card(content_frame)
+        self._create_progress_card(self._content_frame)
 
         # Action Buttons
-        self._create_action_buttons(content_frame)
+        self._create_action_buttons(self._content_frame)
 
-        # Log Panel (collapsible in future)
-        self._create_log_panel(content_frame)
+        # Log Panel
+        self._create_log_panel(self._content_frame)
 
         # Status Bar
-        self._status_bar = StatusBar(main_container)
+        self._status_bar = StatusBar(self._main_container)
         self._status_bar.pack(fill="x", side="bottom")
 
     def _create_header(self, parent: tk.Widget) -> None:
         """Create the header section."""
-        header = tk.Frame(parent, bg=Theme.BG_PRIMARY)
-        header.pack(fill="x", padx=20, pady=(20, 10))
+        self._header = tk.Frame(parent, bg=Theme.get_color("BG_PRIMARY"))
+        self._header.pack(fill="x", padx=20, pady=(20, 10))
 
         # Logo/Title
-        title_frame = tk.Frame(header, bg=Theme.BG_PRIMARY)
+        title_frame = tk.Frame(self._header, bg=Theme.get_color("BG_PRIMARY"))
         title_frame.pack(side="left")
 
-        tk.Label(
+        self._title_eplan = tk.Label(
             title_frame,
             text="EPLAN",
-            bg=Theme.BG_PRIMARY,
-            fg=Theme.ACCENT_PRIMARY,
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("ACCENT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE, "bold")
-        ).pack(side="left")
+        )
+        self._title_eplan.pack(side="left")
 
-        tk.Label(
+        self._title_extractor = tk.Label(
             title_frame,
             text=" eVIEW Extractor",
-            bg=Theme.BG_PRIMARY,
-            fg=Theme.TEXT_PRIMARY,
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE)
-        ).pack(side="left")
+        )
+        self._title_extractor.pack(side="left")
 
-        # Settings button (placeholder)
-        settings_btn = tk.Label(
-            header,
+        # Version badge
+        version_badge = tk.Label(
+            title_frame,
+            text=f" v{VERSION}",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        )
+        version_badge.pack(side="left", padx=(5, 0), pady=(8, 0))
+
+        # Right side controls
+        controls_frame = tk.Frame(self._header, bg=Theme.get_color("BG_PRIMARY"))
+        controls_frame.pack(side="right")
+
+        # Theme toggle (mini)
+        self._theme_btn = tk.Label(
+            controls_frame,
+            text="🌙" if Theme.is_dark_mode() else "☀",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, 16),
+            cursor="hand2"
+        )
+        self._theme_btn.pack(side="left", padx=8)
+        self._theme_btn.bind("<Button-1>", self._toggle_theme)
+        self._theme_btn.bind("<Enter>", lambda e: self._theme_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
+        self._theme_btn.bind("<Leave>", lambda e: self._theme_btn.config(fg=Theme.get_color("TEXT_MUTED")))
+        Tooltip(self._theme_btn, "Toggle Dark/Light Mode")
+
+        # Settings button
+        self._settings_btn = tk.Label(
+            controls_frame,
             text="⚙",
-            bg=Theme.BG_PRIMARY,
-            fg=Theme.TEXT_MUTED,
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_MUTED"),
             font=(Theme.FONT_FAMILY, 18),
             cursor="hand2"
         )
-        settings_btn.pack(side="right", padx=10)
-        settings_btn.bind("<Enter>", lambda e: settings_btn.config(fg=Theme.TEXT_PRIMARY))
-        settings_btn.bind("<Leave>", lambda e: settings_btn.config(fg=Theme.TEXT_MUTED))
-        settings_btn.bind("<Button-1>", lambda e: self._show_settings())
+        self._settings_btn.pack(side="left", padx=8)
+        self._settings_btn.bind("<Enter>", lambda e: self._settings_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
+        self._settings_btn.bind("<Leave>", lambda e: self._settings_btn.config(fg=Theme.get_color("TEXT_MUTED")))
+        self._settings_btn.bind("<Button-1>", lambda e: self._show_settings())
+        Tooltip(self._settings_btn, "Open Settings")
 
-    def _create_card(self, parent: tk.Widget, title: str) -> tk.Frame:
+    def _create_card(self, parent: tk.Widget, title: str, icon: str = "") -> tk.Frame:
         """Create a card container."""
-        card = tk.Frame(parent, bg=Theme.BG_CARD)
+        card = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
         card.pack(fill="x", pady=8)
 
-        # Title
+        # Title row
+        title_row = tk.Frame(card, bg=Theme.get_color("BG_CARD"))
+        title_row.pack(fill="x", padx=20, pady=(15, 10))
+
+        if icon:
+            tk.Label(
+                title_row,
+                text=icon,
+                bg=Theme.get_color("BG_CARD"),
+                fg=Theme.get_color("ACCENT_PRIMARY"),
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING)
+            ).pack(side="left", padx=(0, 8))
+
         tk.Label(
-            card,
+            title_row,
             text=title,
-            bg=Theme.BG_CARD,
-            fg=Theme.TEXT_PRIMARY,
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
-        ).pack(anchor="w", padx=20, pady=(15, 10))
+        ).pack(side="left")
 
         # Content frame
-        content = tk.Frame(card, bg=Theme.BG_CARD)
+        content = tk.Frame(card, bg=Theme.get_color("BG_CARD"))
         content.pack(fill="x", padx=20, pady=(0, 15))
 
         return content
 
     def _create_credentials_card(self, parent: tk.Widget) -> None:
         """Create the credentials input card."""
-        content = self._create_card(parent, "Microsoft Credentials")
+        content = self._create_card(parent, "Microsoft Credentials", "🔐")
 
         # Email
+        email_label_row = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
+        email_label_row.pack(fill="x", pady=(0, 5))
+
         tk.Label(
-            content,
+            email_label_row,
             text="Email Address",
-            bg=Theme.BG_CARD,
-            fg=Theme.TEXT_SECONDARY,
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_SECONDARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(0, 5))
+        ).pack(side="left")
+
+        tk.Label(
+            email_label_row,
+            text="*",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("ACCENT_ERROR"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(side="left")
 
         self._email_entry = ModernEntry(
             content,
             placeholder="your.email@company.com",
-            textvariable=self._username_var
+            textvariable=self._username_var,
+            tooltip="Enter your Microsoft account email",
+            validate_func=validate_email
         )
         self._email_entry.pack(fill="x", pady=(0, 15))
 
         # Password
-        tk.Label(
-            content,
-            text="Password",
-            bg=Theme.BG_CARD,
-            fg=Theme.TEXT_SECONDARY,
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(0, 5))
+        password_label_row = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
+        password_label_row.pack(fill="x", pady=(0, 5))
 
-        self._password_entry = ModernEntry(
+        tk.Label(
+            password_label_row,
+            text="Password",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_SECONDARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(side="left")
+
+        tk.Label(
+            password_label_row,
+            text="*",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("ACCENT_ERROR"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(side="left")
+
+        self._password_entry = PasswordEntry(
             content,
             placeholder="Enter your password",
-            show="●",
-            textvariable=self._password_var
+            textvariable=self._password_var,
+            tooltip="Enter your Microsoft account password (shown as dots for security)"
         )
         self._password_entry.pack(fill="x", pady=(0, 15))
 
         # Project Number
+        project_label_row = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
+        project_label_row.pack(fill="x", pady=(0, 5))
+
         tk.Label(
-            content,
+            project_label_row,
             text="Project Number",
-            bg=Theme.BG_CARD,
-            fg=Theme.TEXT_SECONDARY,
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_SECONDARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(0, 5))
+        ).pack(side="left")
+
+        tk.Label(
+            project_label_row,
+            text="*",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("ACCENT_ERROR"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(side="left")
 
         self._project_entry = ModernEntry(
             content,
             placeholder="e.g., PROJECT-001",
-            textvariable=self._project_var
+            textvariable=self._project_var,
+            tooltip="Enter the EPLAN project number to extract",
+            validate_func=validate_project
         )
         self._project_entry.pack(fill="x")
 
     def _create_options_card(self, parent: tk.Widget) -> None:
         """Create the options card."""
-        content = self._create_card(parent, "Export Options")
+        content = self._create_card(parent, "Options", "⚙")
 
-        options_grid = tk.Frame(content, bg=Theme.BG_CARD)
+        options_grid = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
         options_grid.pack(fill="x")
 
-        # Left column
-        left_col = tk.Frame(options_grid, bg=Theme.BG_CARD)
+        # Left column - Export options
+        left_col = tk.Frame(options_grid, bg=Theme.get_color("BG_CARD"))
         left_col.pack(side="left", fill="x", expand=True)
 
-        ModernCheckbox(
+        tk.Label(
             left_col,
-            text="Export to Excel (.xlsx)",
-            variable=self._export_excel_var
-        ).pack(anchor="w", pady=3)
+            text="Export Format",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 5))
 
         ModernCheckbox(
             left_col,
-            text="Export to CSV",
-            variable=self._export_csv_var
-        ).pack(anchor="w", pady=3)
+            text="Excel (.xlsx)",
+            variable=self._export_excel_var,
+            tooltip="Export results to Excel format"
+        ).pack(anchor="w", pady=2)
 
-        # Right column
-        right_col = tk.Frame(options_grid, bg=Theme.BG_CARD)
+        ModernCheckbox(
+            left_col,
+            text="CSV (.csv)",
+            variable=self._export_csv_var,
+            tooltip="Export results to CSV format"
+        ).pack(anchor="w", pady=2)
+
+        # Right column - Behavior options
+        right_col = tk.Frame(options_grid, bg=Theme.get_color("BG_CARD"))
         right_col.pack(side="right", fill="x", expand=True)
+
+        tk.Label(
+            right_col,
+            text="Behavior",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 5))
 
         ModernCheckbox(
             right_col,
-            text="Run in Background (Headless)",
-            variable=self._headless_var
-        ).pack(anchor="w", pady=3)
+            text="Run in Background",
+            variable=self._headless_var,
+            tooltip="Run browser in headless mode (no visible window)"
+        ).pack(anchor="w", pady=2)
+
+        ModernCheckbox(
+            right_col,
+            text="Save Credentials",
+            variable=self._save_credentials_var,
+            tooltip="Remember your login credentials (encrypted)"
+        ).pack(anchor="w", pady=2)
 
     def _create_progress_card(self, parent: tk.Widget) -> None:
         """Create the progress indicator card."""
-        card = tk.Frame(parent, bg=Theme.BG_CARD)
+        card = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
         card.pack(fill="x", pady=8)
 
+        # Title row
+        title_row = tk.Frame(card, bg=Theme.get_color("BG_CARD"))
+        title_row.pack(fill="x", padx=20, pady=(15, 10))
+
         tk.Label(
-            card,
+            title_row,
+            text="📊",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("ACCENT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING)
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Label(
+            title_row,
             text="Extraction Progress",
-            bg=Theme.BG_CARD,
-            fg=Theme.TEXT_PRIMARY,
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
-        ).pack(anchor="w", padx=20, pady=(15, 10))
+        ).pack(side="left")
 
         self._progress_indicator = ProgressIndicator(card)
         self._progress_indicator.pack(fill="x", padx=20, pady=(0, 15))
 
     def _create_action_buttons(self, parent: tk.Widget) -> None:
         """Create action buttons."""
-        button_frame = tk.Frame(parent, bg=Theme.BG_PRIMARY)
+        button_frame = tk.Frame(parent, bg=Theme.get_color("BG_PRIMARY"))
         button_frame.pack(fill="x", pady=15)
 
         # Center the buttons
-        inner_frame = tk.Frame(button_frame, bg=Theme.BG_PRIMARY)
+        inner_frame = tk.Frame(button_frame, bg=Theme.get_color("BG_PRIMARY"))
         inner_frame.pack()
 
         self._start_button = ModernButton(
             inner_frame,
-            text="Start Extraction",
+            text="▶  Start Extraction",
             command=self._start_extraction,
             primary=True,
-            width=160
+            width=180,
+            tooltip="Start the extraction process"
         )
         self._start_button.pack(side="left", padx=5)
 
         self._stop_button = ModernButton(
             inner_frame,
-            text="Stop",
+            text="■  Stop",
             command=self._stop_extraction,
             primary=False,
-            width=100
+            width=100,
+            tooltip="Stop the running extraction"
         )
         self._stop_button.pack(side="left", padx=5)
         self._stop_button.set_enabled(False)
@@ -292,59 +439,215 @@ class EPlanExtractorGUI:
         self._log_panel = LogPanel(parent)
         self._log_panel.pack(fill="both", expand=True, pady=8)
 
+    def _toggle_theme(self, event: tk.Event = None) -> None:
+        """Toggle between dark and light theme."""
+        is_dark = Theme.toggle_mode()
+        self._theme_btn.config(text="🌙" if is_dark else "☀")
+        self._logger.info(f"Switched to {'dark' if is_dark else 'light'} mode")
+
+    def _on_theme_change(self) -> None:
+        """Handle theme change - requires restart for full effect."""
+        # Update header background
+        is_dark = Theme.is_dark_mode()
+        self._theme_btn.config(text="🌙" if is_dark else "☀")
+
+        # Note: Full theme change requires app restart
+        # This just updates the toggle icon
+
     def _show_settings(self) -> None:
         """Show settings dialog."""
         # Create settings window
         settings_win = tk.Toplevel(self.root)
         settings_win.title("Settings")
-        settings_win.geometry("400x300")
-        settings_win.configure(bg=Theme.BG_PRIMARY)
+        settings_win.geometry("480x500")
+        settings_win.configure(bg=Theme.get_color("BG_PRIMARY"))
         settings_win.transient(self.root)
         settings_win.grab_set()
 
+        # Center on parent
+        settings_win.geometry(f"+{self.root.winfo_x() + 100}+{self.root.winfo_y() + 100}")
+
         # Title
+        header = tk.Frame(settings_win, bg=Theme.get_color("BG_PRIMARY"))
+        header.pack(fill="x", padx=20, pady=20)
+
         tk.Label(
-            settings_win,
-            text="Settings",
-            bg=Theme.BG_PRIMARY,
-            fg=Theme.TEXT_PRIMARY,
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
-        ).pack(pady=20)
+            header,
+            text="⚙  Settings",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE - 4, "bold")
+        ).pack(side="left")
+
+        # Appearance section
+        appearance_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
+        appearance_frame.pack(fill="x", padx=20, pady=10)
+
+        tk.Label(
+            appearance_frame,
+            text="🎨  Appearance",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        ).pack(anchor="w", padx=15, pady=(15, 10))
+
+        # Theme toggle
+        theme_row = tk.Frame(appearance_frame, bg=Theme.get_color("BG_CARD"))
+        theme_row.pack(fill="x", padx=15, pady=(0, 15))
+
+        ThemeToggle(
+            theme_row,
+            command=lambda is_dark: self._apply_theme(is_dark, settings_win)
+        ).pack(anchor="w")
+
+        tk.Label(
+            theme_row,
+            text="(Requires restart for full effect)",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(5, 0))
 
         # Cache section
-        cache_frame = tk.Frame(settings_win, bg=Theme.BG_CARD)
+        cache_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
         cache_frame.pack(fill="x", padx=20, pady=10)
 
         tk.Label(
             cache_frame,
-            text="Cache Management",
-            bg=Theme.BG_CARD,
-            fg=Theme.TEXT_PRIMARY,
+            text="💾  Cache Management",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
         ).pack(anchor="w", padx=15, pady=(15, 5))
 
         tk.Label(
             cache_frame,
-            text="Clear cached extraction data to force re-extraction",
-            bg=Theme.BG_CARD,
-            fg=Theme.TEXT_MUTED,
+            text="Cached data speeds up re-extraction of the same pages.",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
         ).pack(anchor="w", padx=15, pady=(0, 10))
 
-        clear_cache_btn = ModernButton(
-            cache_frame,
-            text="Clear Cache",
+        cache_btn_row = tk.Frame(cache_frame, bg=Theme.get_color("BG_CARD"))
+        cache_btn_row.pack(fill="x", padx=15, pady=(0, 15))
+
+        ModernButton(
+            cache_btn_row,
+            text="🗑  Clear Cache",
             command=lambda: self._clear_cache_action(settings_win),
             primary=False,
-            width=120
+            width=140,
+            tooltip="Delete all cached extraction data"
+        ).pack(side="left")
+
+        # Security section
+        security_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
+        security_frame.pack(fill="x", padx=20, pady=10)
+
+        tk.Label(
+            security_frame,
+            text="🔒  Security",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+
+        tk.Label(
+            security_frame,
+            text="Your password is stored encrypted using Fernet encryption.",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", padx=15, pady=(0, 10))
+
+        security_btn_row = tk.Frame(security_frame, bg=Theme.get_color("BG_CARD"))
+        security_btn_row.pack(fill="x", padx=15, pady=(0, 15))
+
+        ModernButton(
+            security_btn_row,
+            text="🔑  Clear Saved Credentials",
+            command=lambda: self._clear_credentials_action(settings_win),
+            primary=False,
+            width=200,
+            tooltip="Delete saved login credentials"
+        ).pack(side="left")
+
+        # About section
+        about_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
+        about_frame.pack(fill="x", padx=20, pady=10)
+
+        tk.Label(
+            about_frame,
+            text="ℹ  About",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+
+        tk.Label(
+            about_frame,
+            text=f"EPLAN eVIEW Extractor v{VERSION}\n"
+                 "Extracts PLC variables from EPLAN eVIEW diagrams.\n"
+                 "© 2024 EPLAN Extractor Team",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
+            justify="left"
+        ).pack(anchor="w", padx=15, pady=(0, 15))
+
+        # Close button
+        close_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_PRIMARY"))
+        close_frame.pack(fill="x", padx=20, pady=15)
+
+        ModernButton(
+            close_frame,
+            text="Close",
+            command=settings_win.destroy,
+            primary=True,
+            width=100
+        ).pack(side="right")
+
+    def _apply_theme(self, is_dark: bool, settings_win: tk.Toplevel) -> None:
+        """Apply theme change."""
+        Theme.set_dark_mode(is_dark)
+        self._theme_btn.config(text="🌙" if is_dark else "☀")
+
+        # Show restart message
+        messagebox.showinfo(
+            "Theme Changed",
+            f"Theme changed to {'Dark' if is_dark else 'Light'} mode.\n\n"
+            "Please restart the application for the change to take full effect.",
+            parent=settings_win
         )
-        clear_cache_btn.pack(anchor="w", padx=15, pady=(0, 15))
 
     def _clear_cache_action(self, parent_window: tk.Toplevel) -> None:
         """Clear cache and show confirmation."""
         count = self._cache_manager.clear()
         self._log_panel.log(f"Cleared {count} cache entries", "SUCCESS")
-        parent_window.destroy()
+        messagebox.showinfo(
+            "Cache Cleared",
+            f"Successfully cleared {count} cache entries.",
+            parent=parent_window
+        )
+
+    def _clear_credentials_action(self, parent_window: tk.Toplevel) -> None:
+        """Clear saved credentials."""
+        self._password_var.set("")
+        config = AppConfig(
+            email=self._username_var.get(),
+            password_encrypted="",
+            project=self._project_var.get(),
+            headless=self._headless_var.get(),
+            export_excel=self._export_excel_var.get(),
+            export_csv=self._export_csv_var.get()
+        )
+        self._config_manager.save(config)
+        self._log_panel.log("Cleared saved credentials", "SUCCESS")
+        messagebox.showinfo(
+            "Credentials Cleared",
+            "Saved credentials have been removed.",
+            parent=parent_window
+        )
 
     def _log_callback(self, message: str, level: str) -> None:
         """Callback for logger to update GUI log."""
@@ -370,11 +673,15 @@ class EPlanExtractorGUI:
 
     def _save_config(self) -> None:
         """Save current configuration."""
+        password_encrypted = ""
+        if self._save_credentials_var.get():
+            password_encrypted = self._config_manager.encrypt_password(
+                self._password_var.get()
+            )
+
         config = AppConfig(
             email=self._username_var.get(),
-            password_encrypted=self._config_manager.encrypt_password(
-                self._password_var.get()
-            ),
+            password_encrypted=password_encrypted,
             project=self._project_var.get(),
             headless=self._headless_var.get(),
             export_excel=self._export_excel_var.get(),
@@ -384,15 +691,32 @@ class EPlanExtractorGUI:
 
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
-        if not self._username_var.get():
+        email = self._username_var.get()
+        password = self._password_var.get()
+        project = self._project_var.get()
+
+        if not email:
             self._show_error("Please enter your email address")
+            self._email_entry.set_validation_state(False)
             return False
-        if not self._password_var.get():
+
+        if not validate_email(email):
+            self._show_error("Please enter a valid email address")
+            self._email_entry.set_validation_state(False)
+            return False
+
+        self._email_entry.set_validation_state(True)
+
+        if not password:
             self._show_error("Please enter your password")
             return False
-        if not self._project_var.get():
+
+        if not project:
             self._show_error("Please enter a project number")
+            self._project_entry.set_validation_state(False)
             return False
+
+        self._project_entry.set_validation_state(True)
         return True
 
     def _show_error(self, message: str) -> None:
@@ -502,11 +826,12 @@ class EPlanExtractorGUI:
             self._update_progress(3, 1.0)
 
             # Success
+            output_file = f"{self._project_var.get()} IO-List.xlsx"
             self._logger.success("Extraction completed successfully!")
             self.root.after(0, lambda: self._status_bar.set_status("Extraction completed!", "success"))
             self.root.after(0, lambda: messagebox.showinfo(
                 "Success",
-                f"Extraction completed!\n\nOutput: {self._project_var.get()} IO-List.xlsx"
+                f"Extraction completed!\n\nOutput: {output_file}"
             ))
 
         except Exception as e:
