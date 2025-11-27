@@ -80,7 +80,7 @@ except ImportError:
 
 BASE_URL: str = "https://eview.eplan.com/"
 DEBUG: bool = True
-VERSION: str = "2.0.0"
+VERSION: str = "2.1.0"
 
 # Retry configuration
 MAX_RETRIES: int = 3
@@ -1297,40 +1297,610 @@ class SeleniumEPlanExtractor:
 
 
 # =============================================================================
-# GUI APPLICATION
+# GUI APPLICATION - MODERN PROFESSIONAL UI
 # =============================================================================
+
+class Theme:
+    """Modern color theme for the application."""
+
+    # Main colors
+    BG_PRIMARY = "#1a1a2e"      # Dark blue background
+    BG_SECONDARY = "#16213e"    # Slightly lighter background
+    BG_CARD = "#0f3460"         # Card background
+    BG_INPUT = "#1a1a2e"        # Input field background
+
+    # Accent colors
+    ACCENT_PRIMARY = "#e94560"   # Red/Pink accent
+    ACCENT_SECONDARY = "#0f3460" # Blue accent
+    ACCENT_SUCCESS = "#00d9a5"   # Green for success
+    ACCENT_WARNING = "#ffc107"   # Yellow for warnings
+    ACCENT_ERROR = "#ff4757"     # Red for errors
+
+    # Text colors
+    TEXT_PRIMARY = "#ffffff"     # White text
+    TEXT_SECONDARY = "#a0a0a0"   # Gray text
+    TEXT_MUTED = "#6c757d"       # Muted text
+
+    # Border colors
+    BORDER_COLOR = "#2d3748"     # Border color
+    BORDER_FOCUS = "#e94560"     # Border on focus
+
+    # Button colors
+    BTN_PRIMARY_BG = "#e94560"
+    BTN_PRIMARY_FG = "#ffffff"
+    BTN_SECONDARY_BG = "#0f3460"
+    BTN_SECONDARY_FG = "#ffffff"
+    BTN_DISABLED_BG = "#4a5568"
+    BTN_DISABLED_FG = "#718096"
+
+    # Status colors
+    STATUS_IDLE = "#6c757d"
+    STATUS_RUNNING = "#0ea5e9"
+    STATUS_SUCCESS = "#00d9a5"
+    STATUS_ERROR = "#ff4757"
+
+    # Fonts
+    FONT_FAMILY = "Segoe UI"
+    FONT_SIZE_TITLE = 24
+    FONT_SIZE_HEADING = 14
+    FONT_SIZE_BODY = 11
+    FONT_SIZE_SMALL = 9
+
+
+class ModernEntry(tk.Frame):
+    """Custom modern-styled entry widget."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        placeholder: str = "",
+        show: str = "",
+        textvariable: Optional[tk.StringVar] = None,
+        **kwargs
+    ) -> None:
+        super().__init__(parent, bg=Theme.BG_CARD)
+
+        self._placeholder = placeholder
+        self._show_char = show
+        self._has_focus = False
+
+        # Container frame with border effect
+        self._container = tk.Frame(
+            self,
+            bg=Theme.BORDER_COLOR,
+            padx=1,
+            pady=1
+        )
+        self._container.pack(fill="x", expand=True)
+
+        # Inner frame
+        self._inner = tk.Frame(self._container, bg=Theme.BG_INPUT)
+        self._inner.pack(fill="x", expand=True)
+
+        # Entry widget
+        self._entry = tk.Entry(
+            self._inner,
+            bg=Theme.BG_INPUT,
+            fg=Theme.TEXT_PRIMARY,
+            insertbackground=Theme.TEXT_PRIMARY,
+            relief="flat",
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY),
+            textvariable=textvariable,
+            show=show,
+            **kwargs
+        )
+        self._entry.pack(fill="x", padx=12, pady=10)
+
+        # Placeholder handling
+        if placeholder and not textvariable.get():
+            self._show_placeholder()
+
+        # Bindings
+        self._entry.bind("<FocusIn>", self._on_focus_in)
+        self._entry.bind("<FocusOut>", self._on_focus_out)
+
+    def _show_placeholder(self) -> None:
+        """Show placeholder text."""
+        self._entry.config(fg=Theme.TEXT_MUTED, show="")
+        self._entry.delete(0, "end")
+        self._entry.insert(0, self._placeholder)
+
+    def _hide_placeholder(self) -> None:
+        """Hide placeholder text."""
+        self._entry.config(fg=Theme.TEXT_PRIMARY, show=self._show_char)
+        if self._entry.get() == self._placeholder:
+            self._entry.delete(0, "end")
+
+    def _on_focus_in(self, event: tk.Event) -> None:
+        """Handle focus in event."""
+        self._has_focus = True
+        self._container.config(bg=Theme.BORDER_FOCUS)
+        if self._entry.get() == self._placeholder:
+            self._hide_placeholder()
+
+    def _on_focus_out(self, event: tk.Event) -> None:
+        """Handle focus out event."""
+        self._has_focus = False
+        self._container.config(bg=Theme.BORDER_COLOR)
+        if not self._entry.get():
+            self._show_placeholder()
+
+    def get(self) -> str:
+        """Get entry value."""
+        value = self._entry.get()
+        return "" if value == self._placeholder else value
+
+
+class ModernButton(tk.Canvas):
+    """Custom modern-styled button widget."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        text: str = "",
+        command: Optional[Callable] = None,
+        primary: bool = True,
+        width: int = 140,
+        height: int = 42,
+        **kwargs
+    ) -> None:
+        super().__init__(
+            parent,
+            width=width,
+            height=height,
+            bg=Theme.BG_CARD,
+            highlightthickness=0,
+            **kwargs
+        )
+
+        self._text = text
+        self._command = command
+        self._primary = primary
+        self._width = width
+        self._height = height
+        self._enabled = True
+        self._hovered = False
+
+        # Colors
+        if primary:
+            self._bg = Theme.BTN_PRIMARY_BG
+            self._fg = Theme.BTN_PRIMARY_FG
+            self._hover_bg = "#ff6b81"
+        else:
+            self._bg = Theme.BTN_SECONDARY_BG
+            self._fg = Theme.BTN_SECONDARY_FG
+            self._hover_bg = "#1a4a7a"
+
+        self._draw()
+
+        # Bindings
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+
+    def _draw(self) -> None:
+        """Draw the button."""
+        self.delete("all")
+
+        bg = self._bg if self._enabled else Theme.BTN_DISABLED_BG
+        fg = self._fg if self._enabled else Theme.BTN_DISABLED_FG
+
+        if self._hovered and self._enabled:
+            bg = self._hover_bg
+
+        # Draw rounded rectangle
+        radius = 8
+        self._round_rectangle(
+            2, 2, self._width - 2, self._height - 2,
+            radius=radius,
+            fill=bg,
+            outline=""
+        )
+
+        # Draw text
+        self.create_text(
+            self._width // 2,
+            self._height // 2,
+            text=self._text,
+            fill=fg,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        )
+
+    def _round_rectangle(
+        self,
+        x1: int, y1: int, x2: int, y2: int,
+        radius: int = 10,
+        **kwargs
+    ) -> int:
+        """Draw a rounded rectangle."""
+        points = [
+            x1 + radius, y1,
+            x2 - radius, y1,
+            x2, y1,
+            x2, y1 + radius,
+            x2, y2 - radius,
+            x2, y2,
+            x2 - radius, y2,
+            x1 + radius, y2,
+            x1, y2,
+            x1, y2 - radius,
+            x1, y1 + radius,
+            x1, y1,
+        ]
+        return self.create_polygon(points, smooth=True, **kwargs)
+
+    def _on_enter(self, event: tk.Event) -> None:
+        """Handle mouse enter."""
+        if self._enabled:
+            self._hovered = True
+            self._draw()
+            self.config(cursor="hand2")
+
+    def _on_leave(self, event: tk.Event) -> None:
+        """Handle mouse leave."""
+        self._hovered = False
+        self._draw()
+        self.config(cursor="")
+
+    def _on_click(self, event: tk.Event) -> None:
+        """Handle click event."""
+        if self._enabled and self._command:
+            self._command()
+
+    def set_enabled(self, enabled: bool) -> None:
+        """Enable or disable the button."""
+        self._enabled = enabled
+        self._draw()
+
+    def set_text(self, text: str) -> None:
+        """Set button text."""
+        self._text = text
+        self._draw()
+
+
+class ModernCheckbox(tk.Frame):
+    """Custom modern-styled checkbox widget."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        text: str = "",
+        variable: Optional[tk.BooleanVar] = None,
+        **kwargs
+    ) -> None:
+        super().__init__(parent, bg=Theme.BG_CARD)
+
+        self._variable = variable or tk.BooleanVar()
+        self._text = text
+
+        # Checkbox canvas
+        self._canvas = tk.Canvas(
+            self,
+            width=20,
+            height=20,
+            bg=Theme.BG_CARD,
+            highlightthickness=0
+        )
+        self._canvas.pack(side="left", padx=(0, 8))
+
+        # Label
+        self._label = tk.Label(
+            self,
+            text=text,
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+        )
+        self._label.pack(side="left")
+
+        self._draw()
+
+        # Bindings
+        self._canvas.bind("<Button-1>", self._toggle)
+        self._label.bind("<Button-1>", self._toggle)
+        self._variable.trace_add("write", lambda *args: self._draw())
+
+    def _draw(self) -> None:
+        """Draw the checkbox."""
+        self._canvas.delete("all")
+
+        # Draw box
+        self._canvas.create_rectangle(
+            2, 2, 18, 18,
+            outline=Theme.BORDER_COLOR,
+            fill=Theme.BG_INPUT,
+            width=2
+        )
+
+        # Draw checkmark if checked
+        if self._variable.get():
+            self._canvas.create_rectangle(
+                2, 2, 18, 18,
+                outline=Theme.ACCENT_PRIMARY,
+                fill=Theme.ACCENT_PRIMARY,
+                width=2
+            )
+            # Checkmark
+            self._canvas.create_line(
+                6, 10, 9, 14, 14, 6,
+                fill="white",
+                width=2,
+                capstyle="round",
+                joinstyle="round"
+            )
+
+    def _toggle(self, event: tk.Event) -> None:
+        """Toggle the checkbox."""
+        self._variable.set(not self._variable.get())
+
+
+class ProgressIndicator(tk.Canvas):
+    """Animated progress indicator with steps."""
+
+    STEPS = [
+        ("Login", "Authenticating with Microsoft"),
+        ("Project", "Opening project"),
+        ("Extract", "Extracting variables"),
+        ("Export", "Saving results")
+    ]
+
+    def __init__(self, parent: tk.Widget, **kwargs) -> None:
+        super().__init__(
+            parent,
+            height=80,
+            bg=Theme.BG_CARD,
+            highlightthickness=0,
+            **kwargs
+        )
+
+        self._current_step = -1
+        self._progress = 0.0
+        self._animation_id: Optional[str] = None
+
+        self.bind("<Configure>", lambda e: self._draw())
+
+    def _draw(self) -> None:
+        """Draw the progress indicator."""
+        self.delete("all")
+
+        width = self.winfo_width()
+        if width < 10:
+            return
+
+        step_count = len(self.STEPS)
+        step_width = (width - 40) / (step_count - 1)
+        y_line = 25
+        y_text = 55
+
+        # Draw connecting line (background)
+        self.create_line(
+            20, y_line, width - 20, y_line,
+            fill=Theme.BORDER_COLOR,
+            width=3,
+            capstyle="round"
+        )
+
+        # Draw progress line
+        if self._current_step >= 0:
+            progress_width = 20 + (self._current_step * step_width) + (self._progress * step_width)
+            progress_width = min(progress_width, width - 20)
+            self.create_line(
+                20, y_line, progress_width, y_line,
+                fill=Theme.ACCENT_PRIMARY,
+                width=3,
+                capstyle="round"
+            )
+
+        # Draw step circles and labels
+        for i, (name, desc) in enumerate(self.STEPS):
+            x = 20 + i * step_width
+
+            # Circle
+            if i < self._current_step:
+                # Completed
+                color = Theme.ACCENT_SUCCESS
+                text_color = Theme.TEXT_PRIMARY
+            elif i == self._current_step:
+                # Current
+                color = Theme.ACCENT_PRIMARY
+                text_color = Theme.TEXT_PRIMARY
+            else:
+                # Pending
+                color = Theme.BORDER_COLOR
+                text_color = Theme.TEXT_MUTED
+
+            self.create_oval(
+                x - 12, y_line - 12, x + 12, y_line + 12,
+                fill=color,
+                outline=""
+            )
+
+            # Step number or checkmark
+            if i < self._current_step:
+                self.create_text(x, y_line, text="✓", fill="white", font=(Theme.FONT_FAMILY, 10, "bold"))
+            else:
+                self.create_text(x, y_line, text=str(i + 1), fill="white", font=(Theme.FONT_FAMILY, 10, "bold"))
+
+            # Label
+            self.create_text(
+                x, y_text,
+                text=name,
+                fill=text_color,
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+            )
+
+    def set_step(self, step: int, progress: float = 0.0) -> None:
+        """Set the current step and progress."""
+        self._current_step = step
+        self._progress = max(0.0, min(1.0, progress))
+        self._draw()
+
+    def reset(self) -> None:
+        """Reset the progress indicator."""
+        self._current_step = -1
+        self._progress = 0.0
+        self._draw()
+
+
+class StatusBar(tk.Frame):
+    """Modern status bar with icon and message."""
+
+    def __init__(self, parent: tk.Widget, **kwargs) -> None:
+        super().__init__(parent, bg=Theme.BG_SECONDARY, **kwargs)
+
+        # Status icon
+        self._icon_label = tk.Label(
+            self,
+            text="●",
+            bg=Theme.BG_SECONDARY,
+            fg=Theme.STATUS_IDLE,
+            font=(Theme.FONT_FAMILY, 12)
+        )
+        self._icon_label.pack(side="left", padx=(15, 8), pady=10)
+
+        # Status text
+        self._text_label = tk.Label(
+            self,
+            text="Ready",
+            bg=Theme.BG_SECONDARY,
+            fg=Theme.TEXT_SECONDARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY),
+            anchor="w"
+        )
+        self._text_label.pack(side="left", fill="x", expand=True, pady=10)
+
+        # Version
+        self._version_label = tk.Label(
+            self,
+            text=f"v{VERSION}",
+            bg=Theme.BG_SECONDARY,
+            fg=Theme.TEXT_MUTED,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        )
+        self._version_label.pack(side="right", padx=15, pady=10)
+
+    def set_status(self, message: str, status: str = "idle") -> None:
+        """Set status message and state."""
+        self._text_label.config(text=message)
+
+        colors = {
+            "idle": Theme.STATUS_IDLE,
+            "running": Theme.STATUS_RUNNING,
+            "success": Theme.STATUS_SUCCESS,
+            "error": Theme.STATUS_ERROR
+        }
+        self._icon_label.config(fg=colors.get(status, Theme.STATUS_IDLE))
+
+
+class LogPanel(tk.Frame):
+    """Modern log panel with colored output."""
+
+    def __init__(self, parent: tk.Widget, **kwargs) -> None:
+        super().__init__(parent, bg=Theme.BG_SECONDARY, **kwargs)
+
+        # Header
+        header = tk.Frame(self, bg=Theme.BG_SECONDARY)
+        header.pack(fill="x", padx=15, pady=(15, 10))
+
+        tk.Label(
+            header,
+            text="Activity Log",
+            bg=Theme.BG_SECONDARY,
+            fg=Theme.TEXT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
+        ).pack(side="left")
+
+        # Clear button
+        clear_btn = tk.Label(
+            header,
+            text="Clear",
+            bg=Theme.BG_SECONDARY,
+            fg=Theme.TEXT_MUTED,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
+            cursor="hand2"
+        )
+        clear_btn.pack(side="right")
+        clear_btn.bind("<Button-1>", lambda e: self.clear())
+        clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=Theme.TEXT_PRIMARY))
+        clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=Theme.TEXT_MUTED))
+
+        # Log text area
+        self._text = tk.Text(
+            self,
+            bg=Theme.BG_PRIMARY,
+            fg=Theme.TEXT_SECONDARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
+            relief="flat",
+            padx=15,
+            pady=10,
+            wrap="word",
+            state="disabled"
+        )
+        self._text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+
+        # Configure tags for colored output
+        self._text.tag_configure("timestamp", foreground=Theme.TEXT_MUTED)
+        self._text.tag_configure("DEBUG", foreground=Theme.TEXT_MUTED)
+        self._text.tag_configure("INFO", foreground=Theme.TEXT_SECONDARY)
+        self._text.tag_configure("WARNING", foreground=Theme.ACCENT_WARNING)
+        self._text.tag_configure("ERROR", foreground=Theme.ACCENT_ERROR)
+        self._text.tag_configure("SUCCESS", foreground=Theme.ACCENT_SUCCESS)
+
+        # Scrollbar
+        scrollbar = tk.Scrollbar(self._text, command=self._text.yview)
+        scrollbar.pack(side="right", fill="y")
+        self._text.config(yscrollcommand=scrollbar.set)
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        """Add a log message."""
+        self._text.config(state="normal")
+
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._text.insert("end", f"[{timestamp}] ", "timestamp")
+        self._text.insert("end", f"{message}\n", level)
+
+        self._text.see("end")
+        self._text.config(state="disabled")
+
+    def clear(self) -> None:
+        """Clear the log."""
+        self._text.config(state="normal")
+        self._text.delete("1.0", "end")
+        self._text.config(state="disabled")
+
 
 class EPlanExtractorGUI:
     """
-    Tkinter GUI for the EPLAN eVIEW Text Extractor.
+    Modern professional GUI for the EPLAN eVIEW Text Extractor.
 
-    Provides a user-friendly interface for:
-    - Entering credentials
-    - Configuring extraction options
-    - Viewing extraction progress
-    - Managing cache
+    Features:
+    - Dark theme with accent colors
+    - Card-based layout
+    - Progress step indicator
+    - Animated status updates
+    - Professional typography
     """
 
     def __init__(self, root: tk.Tk) -> None:
-        """
-        Initialize the GUI.
-
-        Args:
-            root: Tkinter root window
-        """
+        """Initialize the GUI."""
         self.root = root
-        self.root.title(f"EPLAN eVIEW Text Extractor v{VERSION}")
+        self.root.title("EPLAN eVIEW Extractor")
+        self.root.geometry("700x800")
+        self.root.minsize(600, 700)
+        self.root.configure(bg=Theme.BG_PRIMARY)
 
-        if DEBUG:
-            self.root.geometry("900x700")
-        else:
-            self.root.geometry("500x350")
+        # Try to set window icon (if available)
+        try:
+            self.root.iconbitmap(default="")
+        except:
+            pass
 
         self._logger = get_logger()
         self._config_manager = ConfigManager()
         self._cache_manager = CacheManager()
         self._extractor: Optional[SeleniumEPlanExtractor] = None
         self._is_running = False
+        self._current_step = -1
 
         # Variables
         self._username_var = tk.StringVar()
@@ -1339,7 +1909,6 @@ class EPlanExtractorGUI:
         self._headless_var = tk.BooleanVar(value=True)
         self._export_excel_var = tk.BooleanVar(value=True)
         self._export_csv_var = tk.BooleanVar(value=False)
-        self._status_var = tk.StringVar(value="Ready")
 
         self._setup_ui()
         self._load_config()
@@ -1348,128 +1917,292 @@ class EPlanExtractorGUI:
         self._logger.add_callback(self._log_callback)
 
     def _setup_ui(self) -> None:
-        """Set up the user interface."""
-        # Main frame
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky="nsew")
+        """Set up the modern user interface."""
+        # Main container
+        main_container = tk.Frame(self.root, bg=Theme.BG_PRIMARY)
+        main_container.pack(fill="both", expand=True)
 
-        # Configuration section
-        config_frame = ttk.LabelFrame(main_frame, text="Configuration", padding="10")
-        config_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=5)
+        # Header
+        self._create_header(main_container)
+
+        # Content area with scrolling
+        content_frame = tk.Frame(main_container, bg=Theme.BG_PRIMARY)
+        content_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        # Credentials Card
+        self._create_credentials_card(content_frame)
+
+        # Options Card
+        self._create_options_card(content_frame)
+
+        # Progress Card
+        self._create_progress_card(content_frame)
+
+        # Action Buttons
+        self._create_action_buttons(content_frame)
+
+        # Log Panel (collapsible in future)
+        self._create_log_panel(content_frame)
+
+        # Status Bar
+        self._status_bar = StatusBar(main_container)
+        self._status_bar.pack(fill="x", side="bottom")
+
+    def _create_header(self, parent: tk.Widget) -> None:
+        """Create the header section."""
+        header = tk.Frame(parent, bg=Theme.BG_PRIMARY)
+        header.pack(fill="x", padx=20, pady=(20, 10))
+
+        # Logo/Title
+        title_frame = tk.Frame(header, bg=Theme.BG_PRIMARY)
+        title_frame.pack(side="left")
+
+        tk.Label(
+            title_frame,
+            text="EPLAN",
+            bg=Theme.BG_PRIMARY,
+            fg=Theme.ACCENT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE, "bold")
+        ).pack(side="left")
+
+        tk.Label(
+            title_frame,
+            text=" eVIEW Extractor",
+            bg=Theme.BG_PRIMARY,
+            fg=Theme.TEXT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE)
+        ).pack(side="left")
+
+        # Settings button (placeholder)
+        settings_btn = tk.Label(
+            header,
+            text="⚙",
+            bg=Theme.BG_PRIMARY,
+            fg=Theme.TEXT_MUTED,
+            font=(Theme.FONT_FAMILY, 18),
+            cursor="hand2"
+        )
+        settings_btn.pack(side="right", padx=10)
+        settings_btn.bind("<Enter>", lambda e: settings_btn.config(fg=Theme.TEXT_PRIMARY))
+        settings_btn.bind("<Leave>", lambda e: settings_btn.config(fg=Theme.TEXT_MUTED))
+        settings_btn.bind("<Button-1>", lambda e: self._show_settings())
+
+    def _create_card(self, parent: tk.Widget, title: str) -> tk.Frame:
+        """Create a card container."""
+        card = tk.Frame(parent, bg=Theme.BG_CARD)
+        card.pack(fill="x", pady=8)
+
+        # Title
+        tk.Label(
+            card,
+            text=title,
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
+        ).pack(anchor="w", padx=20, pady=(15, 10))
+
+        # Content frame
+        content = tk.Frame(card, bg=Theme.BG_CARD)
+        content.pack(fill="x", padx=20, pady=(0, 15))
+
+        return content
+
+    def _create_credentials_card(self, parent: tk.Widget) -> None:
+        """Create the credentials input card."""
+        content = self._create_card(parent, "Microsoft Credentials")
 
         # Email
-        ttk.Label(config_frame, text="Microsoft Email:").grid(
-            row=0, column=0, sticky="w", padx=5, pady=2
+        tk.Label(
+            content,
+            text="Email Address",
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_SECONDARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 5))
+
+        self._email_entry = ModernEntry(
+            content,
+            placeholder="your.email@company.com",
+            textvariable=self._username_var
         )
-        ttk.Entry(
-            config_frame, textvariable=self._username_var, width=50
-        ).grid(row=0, column=1, padx=5, pady=2)
+        self._email_entry.pack(fill="x", pady=(0, 15))
 
         # Password
-        ttk.Label(config_frame, text="Microsoft Password:").grid(
-            row=1, column=0, sticky="w", padx=5, pady=2
+        tk.Label(
+            content,
+            text="Password",
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_SECONDARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 5))
+
+        self._password_entry = ModernEntry(
+            content,
+            placeholder="Enter your password",
+            show="●",
+            textvariable=self._password_var
         )
-        ttk.Entry(
-            config_frame, textvariable=self._password_var, width=50, show="*"
-        ).grid(row=1, column=1, padx=5, pady=2)
+        self._password_entry.pack(fill="x", pady=(0, 15))
 
-        # Project number
-        ttk.Label(config_frame, text="Project Number:").grid(
-            row=2, column=0, sticky="w", padx=5, pady=2
+        # Project Number
+        tk.Label(
+            content,
+            text="Project Number",
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_SECONDARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 5))
+
+        self._project_entry = ModernEntry(
+            content,
+            placeholder="e.g., PROJECT-001",
+            textvariable=self._project_var
         )
-        ttk.Entry(
-            config_frame, textvariable=self._project_var, width=50
-        ).grid(row=2, column=1, padx=5, pady=2)
+        self._project_entry.pack(fill="x")
 
-        # Options section
-        options_frame = ttk.LabelFrame(main_frame, text="Options", padding="10")
-        options_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=5)
+    def _create_options_card(self, parent: tk.Widget) -> None:
+        """Create the options card."""
+        content = self._create_card(parent, "Export Options")
 
-        ttk.Checkbutton(
-            options_frame, text="Export to Excel", variable=self._export_excel_var
-        ).grid(row=0, column=0, sticky="w")
+        options_grid = tk.Frame(content, bg=Theme.BG_CARD)
+        options_grid.pack(fill="x")
 
-        ttk.Checkbutton(
-            options_frame, text="Export to CSV", variable=self._export_csv_var
-        ).grid(row=1, column=0, sticky="w")
+        # Left column
+        left_col = tk.Frame(options_grid, bg=Theme.BG_CARD)
+        left_col.pack(side="left", fill="x", expand=True)
 
-        if DEBUG:
-            ttk.Checkbutton(
-                options_frame, text="Browser in Background (Headless)",
-                variable=self._headless_var
-            ).grid(row=0, column=1, sticky="w", padx=20)
+        ModernCheckbox(
+            left_col,
+            text="Export to Excel (.xlsx)",
+            variable=self._export_excel_var
+        ).pack(anchor="w", pady=3)
 
-        # Buttons
-        button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=2, column=0, columnspan=2, pady=10)
+        ModernCheckbox(
+            left_col,
+            text="Export to CSV",
+            variable=self._export_csv_var
+        ).pack(anchor="w", pady=3)
 
-        self._start_button = ttk.Button(
-            button_frame, text="Start Extraction", command=self._start_extraction
+        # Right column
+        right_col = tk.Frame(options_grid, bg=Theme.BG_CARD)
+        right_col.pack(side="right", fill="x", expand=True)
+
+        ModernCheckbox(
+            right_col,
+            text="Run in Background (Headless)",
+            variable=self._headless_var
+        ).pack(anchor="w", pady=3)
+
+    def _create_progress_card(self, parent: tk.Widget) -> None:
+        """Create the progress indicator card."""
+        card = tk.Frame(parent, bg=Theme.BG_CARD)
+        card.pack(fill="x", pady=8)
+
+        tk.Label(
+            card,
+            text="Extraction Progress",
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
+        ).pack(anchor="w", padx=20, pady=(15, 10))
+
+        self._progress_indicator = ProgressIndicator(card)
+        self._progress_indicator.pack(fill="x", padx=20, pady=(0, 15))
+
+    def _create_action_buttons(self, parent: tk.Widget) -> None:
+        """Create action buttons."""
+        button_frame = tk.Frame(parent, bg=Theme.BG_PRIMARY)
+        button_frame.pack(fill="x", pady=15)
+
+        # Center the buttons
+        inner_frame = tk.Frame(button_frame, bg=Theme.BG_PRIMARY)
+        inner_frame.pack()
+
+        self._start_button = ModernButton(
+            inner_frame,
+            text="Start Extraction",
+            command=self._start_extraction,
+            primary=True,
+            width=160
         )
-        self._start_button.grid(row=0, column=0, padx=5)
+        self._start_button.pack(side="left", padx=5)
 
-        self._stop_button = ttk.Button(
-            button_frame, text="Stop", command=self._stop_extraction, state="disabled"
+        self._stop_button = ModernButton(
+            inner_frame,
+            text="Stop",
+            command=self._stop_extraction,
+            primary=False,
+            width=100
         )
-        self._stop_button.grid(row=0, column=1, padx=5)
+        self._stop_button.pack(side="left", padx=5)
+        self._stop_button.set_enabled(False)
 
-        if DEBUG:
-            ttk.Button(
-                button_frame, text="Clear Log", command=self._clear_log
-            ).grid(row=0, column=2, padx=5)
+    def _create_log_panel(self, parent: tk.Widget) -> None:
+        """Create the log panel."""
+        self._log_panel = LogPanel(parent)
+        self._log_panel.pack(fill="both", expand=True, pady=8)
 
-            ttk.Button(
-                button_frame, text="Clear Cache", command=self._clear_cache
-            ).grid(row=0, column=3, padx=5)
+    def _show_settings(self) -> None:
+        """Show settings dialog."""
+        # Create settings window
+        settings_win = tk.Toplevel(self.root)
+        settings_win.title("Settings")
+        settings_win.geometry("400x300")
+        settings_win.configure(bg=Theme.BG_PRIMARY)
+        settings_win.transient(self.root)
+        settings_win.grab_set()
 
-        # Log area (debug mode)
-        if DEBUG:
-            log_frame = ttk.LabelFrame(main_frame, text="Log", padding="10")
-            log_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=5)
+        # Title
+        tk.Label(
+            settings_win,
+            text="Settings",
+            bg=Theme.BG_PRIMARY,
+            fg=Theme.TEXT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
+        ).pack(pady=20)
 
-            self._log_text = scrolledtext.ScrolledText(
-                log_frame, height=20, width=100
-            )
-            self._log_text.grid(row=0, column=0, sticky="nsew")
+        # Cache section
+        cache_frame = tk.Frame(settings_win, bg=Theme.BG_CARD)
+        cache_frame.pack(fill="x", padx=20, pady=10)
 
-            log_frame.columnconfigure(0, weight=1)
-            log_frame.rowconfigure(0, weight=1)
+        tk.Label(
+            cache_frame,
+            text="Cache Management",
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_PRIMARY,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
 
-        # Status bar
-        ttk.Label(
-            main_frame, textvariable=self._status_var, relief="sunken"
-        ).grid(row=4, column=0, columnspan=2, sticky="ew", pady=5)
+        tk.Label(
+            cache_frame,
+            text="Clear cached extraction data to force re-extraction",
+            bg=Theme.BG_CARD,
+            fg=Theme.TEXT_MUTED,
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", padx=15, pady=(0, 10))
 
-        # Configure grid weights
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(3, weight=1)
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        clear_cache_btn = ModernButton(
+            cache_frame,
+            text="Clear Cache",
+            command=lambda: self._clear_cache_action(settings_win),
+            primary=False,
+            width=120
+        )
+        clear_cache_btn.pack(anchor="w", padx=15, pady=(0, 15))
+
+    def _clear_cache_action(self, parent_window: tk.Toplevel) -> None:
+        """Clear cache and show confirmation."""
+        count = self._cache_manager.clear()
+        self._log_panel.log(f"Cleared {count} cache entries", "SUCCESS")
+        parent_window.destroy()
 
     def _log_callback(self, message: str, level: str) -> None:
         """Callback for logger to update GUI log."""
-        if not DEBUG:
-            return
-
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        log_message = f"[{timestamp}] [{level}] {message}\n"
-
         try:
-            self._log_text.insert("end", log_message)
-            self._log_text.see("end")
+            self._log_panel.log(message, level)
             self.root.update_idletasks()
         except Exception:
             pass
-
-    def _clear_log(self) -> None:
-        """Clear the log display."""
-        if DEBUG:
-            self._log_text.delete("1.0", "end")
-
-    def _clear_cache(self) -> None:
-        """Clear the extraction cache."""
-        count = self._cache_manager.clear()
-        messagebox.showinfo("Cache Cleared", f"Cleared {count} cache entries")
 
     def _load_config(self) -> None:
         """Load saved configuration."""
@@ -1481,7 +2214,6 @@ class EPlanExtractorGUI:
         self._export_excel_var.set(config.export_excel)
         self._export_csv_var.set(config.export_csv)
 
-        # Decrypt password
         if config.password_encrypted:
             password = self._config_manager.decrypt_password(config.password_encrypted)
             self._password_var.set(password)
@@ -1500,54 +2232,68 @@ class EPlanExtractorGUI:
         )
         self._config_manager.save(config)
 
+    def _validate_inputs(self) -> bool:
+        """Validate user inputs."""
+        if not self._username_var.get():
+            self._show_error("Please enter your email address")
+            return False
+        if not self._password_var.get():
+            self._show_error("Please enter your password")
+            return False
+        if not self._project_var.get():
+            self._show_error("Please enter a project number")
+            return False
+        return True
+
+    def _show_error(self, message: str) -> None:
+        """Show error message."""
+        self._status_bar.set_status(message, "error")
+        self._log_panel.log(message, "ERROR")
+
     def _start_extraction(self) -> None:
         """Start the extraction process."""
         if self._is_running:
-            messagebox.showwarning("Warning", "Extraction is already running!")
             return
 
-        # Validate input
-        if not all([
-            self._username_var.get(),
-            self._password_var.get(),
-            self._project_var.get()
-        ]):
-            messagebox.showerror("Error", "Please fill in all required fields.")
+        if not self._validate_inputs():
             return
 
-        # Save configuration
         self._save_config()
 
-        # Update UI
-        self._start_button.config(state="disabled")
-        self._stop_button.config(state="normal")
-        self._status_var.set("Extraction running...")
+        # Update UI state
+        self._is_running = True
+        self._start_button.set_enabled(False)
+        self._stop_button.set_enabled(True)
+        self._progress_indicator.reset()
+        self._status_bar.set_status("Starting extraction...", "running")
 
         # Start extraction thread
-        self._is_running = True
         thread = threading.Thread(target=self._run_extraction, daemon=True)
         thread.start()
 
     def _stop_extraction(self) -> None:
         """Stop the extraction process."""
         self._is_running = False
-        self._status_var.set("Stopping...")
+        self._status_bar.set_status("Stopping...", "running")
 
         if self._extractor:
             self._extractor.request_stop()
 
-        self._start_button.config(state="normal")
-        self._stop_button.config(state="disabled")
-        self._status_var.set("Extraction stopped")
+        self._start_button.set_enabled(True)
+        self._stop_button.set_enabled(False)
+        self._status_bar.set_status("Extraction stopped", "idle")
+
+    def _update_progress(self, step: int, progress: float = 0.0) -> None:
+        """Update progress indicator (thread-safe)."""
+        self.root.after(0, lambda: self._progress_indicator.set_step(step, progress))
 
     def _run_extraction(self) -> None:
         """Run the extraction in a background thread."""
         try:
-            self._logger.info("=" * 50)
+            self._logger.info("=" * 40)
             self._logger.info("Starting EPLAN eVIEW extraction")
-            self._logger.info(f"Server: {BASE_URL}")
             self._logger.info(f"Project: {self._project_var.get()}")
-            self._logger.info("=" * 50)
+            self._logger.info("=" * 40)
 
             self._extractor = SeleniumEPlanExtractor(
                 base_url=BASE_URL,
@@ -1558,24 +2304,71 @@ class EPlanExtractorGUI:
                 cache_manager=self._cache_manager
             )
 
-            if self._extractor.run_extraction() and self._is_running:
-                self._logger.success("Extraction completed successfully!")
-                self._status_var.set("Extraction completed")
-                messagebox.showinfo("Success", "Extraction completed successfully!")
-            else:
-                self._logger.warning("Extraction cancelled or failed")
-                self._status_var.set("Extraction cancelled")
+            # Step 0: Login
+            self._update_progress(0, 0.0)
+            self.root.after(0, lambda: self._status_bar.set_status("Logging in...", "running"))
+
+            self._extractor.setup_driver()
+            self._update_progress(0, 0.3)
+
+            if not self._extractor.click_on_login_with_microsoft():
+                raise Exception("Failed to find Microsoft login")
+            self._update_progress(0, 0.6)
+
+            if not self._extractor.login():
+                raise Exception("Login failed")
+            self._update_progress(0, 1.0)
+
+            if not self._is_running:
+                return
+
+            # Step 1: Open Project
+            self._update_progress(1, 0.0)
+            self.root.after(0, lambda: self._status_bar.set_status("Opening project...", "running"))
+
+            if not self._extractor.open_project():
+                raise Exception("Failed to open project")
+            self._update_progress(1, 0.5)
+
+            if not self._extractor.switch_to_list_view():
+                raise Exception("Failed to switch view")
+            self._update_progress(1, 1.0)
+
+            if not self._is_running:
+                return
+
+            # Step 2: Extract
+            self._update_progress(2, 0.0)
+            self.root.after(0, lambda: self._status_bar.set_status("Extracting variables...", "running"))
+
+            if not self._extractor.extract_variables():
+                raise Exception("Extraction failed")
+            self._update_progress(2, 1.0)
+
+            if not self._is_running:
+                return
+
+            # Step 3: Export
+            self._update_progress(3, 1.0)
+
+            # Success
+            self._logger.success("Extraction completed successfully!")
+            self.root.after(0, lambda: self._status_bar.set_status("Extraction completed!", "success"))
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Success",
+                f"Extraction completed!\n\nOutput: {self._project_var.get()} IO-List.xlsx"
+            ))
 
         except Exception as e:
             self._logger.error(f"Extraction error: {e}")
-            self._status_var.set("Extraction failed")
-            messagebox.showerror("Error", f"Extraction failed:\n{str(e)}")
+            self.root.after(0, lambda: self._status_bar.set_status(f"Error: {str(e)[:50]}", "error"))
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Extraction failed:\n{str(e)}"))
 
         finally:
             self._is_running = False
             self._extractor = None
-            self._start_button.config(state="normal")
-            self._stop_button.config(state="disabled")
+            self.root.after(0, lambda: self._start_button.set_enabled(True))
+            self.root.after(0, lambda: self._stop_button.set_enabled(False))
 
 
 # =============================================================================
