@@ -14,6 +14,7 @@ from ..constants import BASE_URL, VERSION
 from ..core.cache import CacheManager
 from ..core.config import AppConfig, ConfigManager
 from ..core.extractor import SeleniumEPlanExtractor
+from ..core.updater import UpdateChecker, UpdateDownloader, ReleaseInfo, format_size
 from ..utils.logging import get_logger
 from .panels import LogPanel, ProgressIndicator, StatusBar
 from .theme import Theme
@@ -572,6 +573,49 @@ class EPlanExtractorGUI:
             tooltip="Delete saved login credentials"
         ).pack(side="left")
 
+        # Updates section
+        updates_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
+        updates_frame.pack(fill="x", padx=20, pady=10)
+
+        tk.Label(
+            updates_frame,
+            text="🔄  Updates",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+
+        tk.Label(
+            updates_frame,
+            text=f"Current version: v{VERSION}",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", padx=15, pady=(0, 5))
+
+        # Update status label
+        self._update_status_label = tk.Label(
+            updates_frame,
+            text="",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        )
+        self._update_status_label.pack(anchor="w", padx=15, pady=(0, 10))
+
+        update_btn_row = tk.Frame(updates_frame, bg=Theme.get_color("BG_CARD"))
+        update_btn_row.pack(fill="x", padx=15, pady=(0, 15))
+
+        self._check_update_btn = ModernButton(
+            update_btn_row,
+            text="🔍  Check for Updates",
+            command=lambda: self._check_for_updates(settings_win),
+            primary=False,
+            width=180,
+            tooltip="Check GitHub for new releases"
+        )
+        self._check_update_btn.pack(side="left")
+
         # About section
         about_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
         about_frame.pack(fill="x", padx=20, pady=10)
@@ -648,6 +692,299 @@ class EPlanExtractorGUI:
             "Saved credentials have been removed.",
             parent=parent_window
         )
+
+    def _check_for_updates(self, parent_window: tk.Toplevel) -> None:
+        """Check for updates from GitHub releases."""
+        # Update UI
+        self._check_update_btn.set_enabled(False)
+        self._update_status_label.config(
+            text="Checking for updates...",
+            fg=Theme.get_color("TEXT_MUTED")
+        )
+        self._logger.info("Checking for updates...")
+
+        # Create checker and start async check
+        checker = UpdateChecker()
+        checker.check_for_updates_async(
+            lambda release, error: self.root.after(
+                0,
+                lambda: self._on_update_check_complete(release, error, parent_window)
+            )
+        )
+
+    def _on_update_check_complete(
+        self,
+        release: Optional[ReleaseInfo],
+        error: Optional[Exception],
+        parent_window: tk.Toplevel
+    ) -> None:
+        """Handle update check completion."""
+        self._check_update_btn.set_enabled(True)
+
+        if error:
+            self._update_status_label.config(
+                text=f"Error checking for updates: {str(error)[:40]}",
+                fg=Theme.get_color("ACCENT_ERROR")
+            )
+            self._logger.error(f"Update check failed: {error}")
+            return
+
+        if release is None:
+            self._update_status_label.config(
+                text="You're running the latest version!",
+                fg=Theme.get_color("ACCENT_SUCCESS")
+            )
+            self._logger.info("Application is up to date")
+            return
+
+        # Update available
+        self._update_status_label.config(
+            text=f"Update available: v{release.version}",
+            fg=Theme.get_color("ACCENT_WARNING")
+        )
+        self._logger.info(f"Update available: v{release.version}")
+
+        # Show update dialog
+        self._show_update_dialog(release, parent_window)
+
+    def _show_update_dialog(
+        self,
+        release: ReleaseInfo,
+        parent_window: tk.Toplevel
+    ) -> None:
+        """Show dialog for available update."""
+        dialog = tk.Toplevel(parent_window)
+        dialog.title("Update Available")
+        dialog.geometry("450x400")
+        dialog.configure(bg=Theme.get_color("BG_PRIMARY"))
+        dialog.transient(parent_window)
+        dialog.grab_set()
+
+        # Center on parent
+        dialog.geometry(f"+{parent_window.winfo_x() + 50}+{parent_window.winfo_y() + 50}")
+
+        # Header
+        header_frame = tk.Frame(dialog, bg=Theme.get_color("BG_PRIMARY"))
+        header_frame.pack(fill="x", padx=20, pady=(20, 10))
+
+        tk.Label(
+            header_frame,
+            text="🎉  Update Available!",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("ACCENT_SUCCESS"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING + 2, "bold")
+        ).pack(anchor="w")
+
+        # Version info
+        version_frame = tk.Frame(dialog, bg=Theme.get_color("BG_CARD"))
+        version_frame.pack(fill="x", padx=20, pady=10)
+
+        tk.Label(
+            version_frame,
+            text=f"New version: v{release.version}",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        ).pack(anchor="w", padx=15, pady=(15, 5))
+
+        tk.Label(
+            version_frame,
+            text=f"Current version: v{VERSION}",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", padx=15)
+
+        if release.download_size > 0:
+            tk.Label(
+                version_frame,
+                text=f"Download size: {format_size(release.download_size)}",
+                bg=Theme.get_color("BG_CARD"),
+                fg=Theme.get_color("TEXT_MUTED"),
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+            ).pack(anchor="w", padx=15, pady=(5, 15))
+        else:
+            tk.Label(version_frame, text="", bg=Theme.get_color("BG_CARD")).pack(pady=(0, 10))
+
+        # Release notes
+        notes_frame = tk.Frame(dialog, bg=Theme.get_color("BG_CARD"))
+        notes_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        tk.Label(
+            notes_frame,
+            text="Release Notes:",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL, "bold")
+        ).pack(anchor="w", padx=15, pady=(10, 5))
+
+        # Scrollable text for release notes
+        notes_text = tk.Text(
+            notes_frame,
+            wrap="word",
+            height=8,
+            bg=Theme.get_color("BG_INPUT"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
+            relief="flat",
+            padx=10,
+            pady=10
+        )
+        notes_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        notes_text.insert("1.0", release.body or "No release notes available.")
+        notes_text.config(state="disabled")
+
+        # Buttons
+        btn_frame = tk.Frame(dialog, bg=Theme.get_color("BG_PRIMARY"))
+        btn_frame.pack(fill="x", padx=20, pady=15)
+
+        # Download/Open button
+        if release.download_url:
+            ModernButton(
+                btn_frame,
+                text="⬇  Download Update",
+                command=lambda: self._download_update(release, dialog),
+                primary=True,
+                width=150,
+                tooltip="Download the update file"
+            ).pack(side="left", padx=(0, 10))
+
+        ModernButton(
+            btn_frame,
+            text="🌐  View on GitHub",
+            command=lambda: UpdateDownloader.open_release_page(release.html_url),
+            primary=False,
+            width=140,
+            tooltip="Open release page in browser"
+        ).pack(side="left", padx=(0, 10))
+
+        ModernButton(
+            btn_frame,
+            text="Later",
+            command=dialog.destroy,
+            primary=False,
+            width=80
+        ).pack(side="right")
+
+    def _download_update(self, release: ReleaseInfo, dialog: tk.Toplevel) -> None:
+        """Download update and offer to install."""
+        # Create progress dialog
+        progress_dialog = tk.Toplevel(dialog)
+        progress_dialog.title("Downloading Update")
+        progress_dialog.geometry("350x150")
+        progress_dialog.configure(bg=Theme.get_color("BG_PRIMARY"))
+        progress_dialog.transient(dialog)
+        progress_dialog.grab_set()
+
+        # Center on parent
+        progress_dialog.geometry(f"+{dialog.winfo_x() + 50}+{dialog.winfo_y() + 100}")
+
+        tk.Label(
+            progress_dialog,
+            text="Downloading update...",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+        ).pack(pady=(20, 10))
+
+        # Progress label
+        progress_label = tk.Label(
+            progress_dialog,
+            text="0%",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        )
+        progress_label.pack(pady=5)
+
+        # Progress bar (simple canvas-based)
+        progress_canvas = tk.Canvas(
+            progress_dialog,
+            width=300,
+            height=20,
+            bg=Theme.get_color("BG_SECONDARY"),
+            highlightthickness=0
+        )
+        progress_canvas.pack(pady=10)
+        progress_bar = progress_canvas.create_rectangle(
+            0, 0, 0, 20,
+            fill=Theme.get_color("ACCENT_PRIMARY"),
+            outline=""
+        )
+
+        # Cancel button
+        cancel_pressed = [False]
+
+        def cancel_download():
+            cancel_pressed[0] = True
+            downloader.cancel()
+            progress_dialog.destroy()
+
+        ModernButton(
+            progress_dialog,
+            text="Cancel",
+            command=cancel_download,
+            primary=False,
+            width=80
+        ).pack(pady=10)
+
+        # Progress callback
+        def update_progress(downloaded: int, total: int):
+            if total > 0:
+                percent = int((downloaded / total) * 100)
+                bar_width = int((downloaded / total) * 300)
+                self.root.after(0, lambda: [
+                    progress_label.config(
+                        text=f"{percent}% ({format_size(downloaded)} / {format_size(total)})"
+                    ),
+                    progress_canvas.coords(progress_bar, 0, 0, bar_width, 20)
+                ])
+
+        # Completion callback
+        def on_download_complete(file_path, error):
+            if cancel_pressed[0]:
+                return
+
+            self.root.after(0, progress_dialog.destroy)
+
+            if error:
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Download Failed",
+                    f"Failed to download update:\n{str(error)}",
+                    parent=dialog
+                ))
+                return
+
+            if file_path:
+                self.root.after(0, lambda: self._offer_install(file_path, release, dialog))
+
+        # Start download
+        downloader = UpdateDownloader(release)
+        downloader.set_progress_callback(update_progress)
+        downloader.download_async(on_download_complete)
+
+    def _offer_install(self, file_path, release: ReleaseInfo, dialog: tk.Toplevel) -> None:
+        """Offer to install downloaded update."""
+        result = messagebox.askyesno(
+            "Download Complete",
+            f"Update v{release.version} downloaded successfully!\n\n"
+            f"File: {file_path}\n\n"
+            "Would you like to open the installer now?\n"
+            "(The application will close)",
+            parent=dialog
+        )
+
+        if result:
+            if UpdateDownloader.install_update(file_path):
+                self._logger.info("Starting update installer...")
+                dialog.destroy()
+                self.root.quit()
+            else:
+                messagebox.showinfo(
+                    "Manual Installation Required",
+                    f"Please manually run the installer:\n\n{file_path}",
+                    parent=dialog
+                )
 
     def _log_callback(self, message: str, level: str) -> None:
         """Callback for logger to update GUI log."""
