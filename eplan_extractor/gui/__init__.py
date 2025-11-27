@@ -6,6 +6,7 @@ Import directly from submodules:
     from eplan_extractor.gui.theme import Theme
     from eplan_extractor.gui.widgets import ModernButton, ModernCheckbox, ModernEntry
     from eplan_extractor.gui.panels import LogPanel, ProgressIndicator, StatusBar
+    from eplan_extractor.gui.tray import SystemTray
     from eplan_extractor.gui.app import EPlanExtractorGUI
 """
 
@@ -20,5 +21,6 @@ __all__ = [
     "LogPanel",
     "ProgressIndicator",
     "StatusBar",
+    "SystemTray",
     "EPlanExtractorGUI",
 ]

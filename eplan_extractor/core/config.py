@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import base64
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -18,12 +19,47 @@ from ..utils.logging import get_logger
 @dataclass
 class AppConfig:
     """Application configuration data class."""
+    # Credentials
     email: str = ""
     password_encrypted: str = ""
     project: str = ""
+
+    # Export options
     headless: bool = True
     export_excel: bool = True
     export_csv: bool = False
+    export_json: bool = False
+    export_directory: str = ""
+
+    # UI preferences
+    dark_mode: bool = True
+    language: str = "en"  # "en" or "de"
+    check_updates_on_startup: bool = True
+    minimize_to_tray: bool = False
+    show_notifications: bool = True
+
+    # Network
+    proxy_enabled: bool = False
+    proxy_host: str = ""
+    proxy_port: int = 8080
+    proxy_username: str = ""
+    proxy_password_encrypted: str = ""
+
+    # Recent projects (max 10)
+    recent_projects: List[str] = field(default_factory=list)
+
+
+@dataclass
+class ExtractionRecord:
+    """Record of a past extraction."""
+    project: str
+    timestamp: str
+    duration_seconds: float
+    pages_extracted: int
+    variables_found: int
+    output_file: str
+    success: bool
+    error_message: str = ""
 
 
 class ConfigManager:
@@ -35,12 +71,16 @@ class ConfigManager:
 
     CONFIG_FILE: str = "eplan_config.json"
     KEY_FILE: str = "fernet.key"
+    HISTORY_FILE: str = "eplan_history.json"
+    MAX_RECENT_PROJECTS: int = 10
+    MAX_HISTORY_ENTRIES: int = 100
 
     def __init__(self) -> None:
         """Initialize the configuration manager."""
         self._logger = get_logger()
         self._fernet: Optional[Fernet] = None
         self._config = AppConfig()
+        self._history: List[ExtractionRecord] = []
         self._setup_encryption()
 
     def _setup_encryption(self) -> None:
@@ -119,7 +159,20 @@ class ConfigManager:
                 project=data.get("project", ""),
                 headless=data.get("headless", True),
                 export_excel=data.get("export_excel", True),
-                export_csv=data.get("export_csv", False)
+                export_csv=data.get("export_csv", False),
+                export_json=data.get("export_json", False),
+                export_directory=data.get("export_directory", ""),
+                dark_mode=data.get("dark_mode", True),
+                language=data.get("language", "en"),
+                check_updates_on_startup=data.get("check_updates_on_startup", True),
+                minimize_to_tray=data.get("minimize_to_tray", False),
+                show_notifications=data.get("show_notifications", True),
+                proxy_enabled=data.get("proxy_enabled", False),
+                proxy_host=data.get("proxy_host", ""),
+                proxy_port=data.get("proxy_port", 8080),
+                proxy_username=data.get("proxy_username", ""),
+                proxy_password_encrypted=data.get("proxy_password", ""),
+                recent_projects=data.get("recent_projects", [])[:self.MAX_RECENT_PROJECTS]
             )
 
             self._logger.info("Configuration loaded successfully")
@@ -146,7 +199,20 @@ class ConfigManager:
                 "project": config.project,
                 "headless": config.headless,
                 "export_excel": config.export_excel,
-                "export_csv": config.export_csv
+                "export_csv": config.export_csv,
+                "export_json": config.export_json,
+                "export_directory": config.export_directory,
+                "dark_mode": config.dark_mode,
+                "language": config.language,
+                "check_updates_on_startup": config.check_updates_on_startup,
+                "minimize_to_tray": config.minimize_to_tray,
+                "show_notifications": config.show_notifications,
+                "proxy_enabled": config.proxy_enabled,
+                "proxy_host": config.proxy_host,
+                "proxy_port": config.proxy_port,
+                "proxy_username": config.proxy_username,
+                "proxy_password": config.proxy_password_encrypted,
+                "recent_projects": config.recent_projects[:self.MAX_RECENT_PROJECTS]
             }
 
             with open(self.CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -159,3 +225,143 @@ class ConfigManager:
         except IOError as e:
             self._logger.error(f"Failed to save configuration: {e}")
             return False
+
+    def add_recent_project(self, project: str) -> None:
+        """Add a project to the recent projects list."""
+        if not project:
+            return
+
+        # Remove if already exists
+        if project in self._config.recent_projects:
+            self._config.recent_projects.remove(project)
+
+        # Add to front
+        self._config.recent_projects.insert(0, project)
+
+        # Trim to max
+        self._config.recent_projects = self._config.recent_projects[:self.MAX_RECENT_PROJECTS]
+
+        # Auto-save
+        self.save(self._config)
+
+    def get_recent_projects(self) -> List[str]:
+        """Get list of recent projects."""
+        return self._config.recent_projects.copy()
+
+    # =========================================================================
+    # History Management
+    # =========================================================================
+
+    def load_history(self) -> List[ExtractionRecord]:
+        """Load extraction history from file."""
+        history_path = Path(self.HISTORY_FILE)
+
+        if not history_path.exists():
+            return []
+
+        try:
+            with open(history_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            self._history = [
+                ExtractionRecord(
+                    project=entry.get("project", ""),
+                    timestamp=entry.get("timestamp", ""),
+                    duration_seconds=entry.get("duration_seconds", 0),
+                    pages_extracted=entry.get("pages_extracted", 0),
+                    variables_found=entry.get("variables_found", 0),
+                    output_file=entry.get("output_file", ""),
+                    success=entry.get("success", False),
+                    error_message=entry.get("error_message", "")
+                )
+                for entry in data
+            ]
+
+            return self._history
+
+        except (json.JSONDecodeError, IOError) as e:
+            self._logger.error(f"Failed to load history: {e}")
+            return []
+
+    def add_history_entry(self, record: ExtractionRecord) -> None:
+        """Add an extraction record to history."""
+        self._history.insert(0, record)
+
+        # Trim to max
+        self._history = self._history[:self.MAX_HISTORY_ENTRIES]
+
+        # Save
+        self._save_history()
+
+    def _save_history(self) -> bool:
+        """Save history to file."""
+        try:
+            data = [
+                {
+                    "project": record.project,
+                    "timestamp": record.timestamp,
+                    "duration_seconds": record.duration_seconds,
+                    "pages_extracted": record.pages_extracted,
+                    "variables_found": record.variables_found,
+                    "output_file": record.output_file,
+                    "success": record.success,
+                    "error_message": record.error_message
+                }
+                for record in self._history
+            ]
+
+            with open(self.HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+
+            return True
+
+        except IOError as e:
+            self._logger.error(f"Failed to save history: {e}")
+            return False
+
+    def clear_history(self) -> int:
+        """Clear extraction history. Returns number of entries cleared."""
+        count = len(self._history)
+        self._history = []
+        self._save_history()
+        return count
+
+    def get_history(self) -> List[ExtractionRecord]:
+        """Get extraction history."""
+        if not self._history:
+            self.load_history()
+        return self._history.copy()
+
+    def get_statistics(self) -> dict:
+        """Get extraction statistics from history."""
+        if not self._history:
+            self.load_history()
+
+        if not self._history:
+            return {
+                "total_extractions": 0,
+                "successful_extractions": 0,
+                "failed_extractions": 0,
+                "total_pages": 0,
+                "total_variables": 0,
+                "total_time_seconds": 0,
+                "average_time_seconds": 0,
+                "unique_projects": 0
+            }
+
+        successful = [r for r in self._history if r.success]
+        failed = [r for r in self._history if not r.success]
+        projects = set(r.project for r in self._history)
+
+        total_time = sum(r.duration_seconds for r in self._history)
+
+        return {
+            "total_extractions": len(self._history),
+            "successful_extractions": len(successful),
+            "failed_extractions": len(failed),
+            "total_pages": sum(r.pages_extracted for r in successful),
+            "total_variables": sum(r.variables_found for r in successful),
+            "total_time_seconds": total_time,
+            "average_time_seconds": total_time / len(self._history) if self._history else 0,
+            "unique_projects": len(projects)
+        }
