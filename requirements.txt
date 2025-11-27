@@ -11,7 +11,11 @@ beautifulsoup4>=4.12.0
 pandas>=2.0.0
 openpyxl>=3.1.0  # Required for Excel export
 
-# Encryption for credential storage
+# Optional: Encryption for credential storage (falls back to base64 if not available)
 cryptography>=41.0.0
+
+# Optional: System tray support
+pystray>=0.19.0
+Pillow>=10.0.0
 
 # Note: tkinter is part of Python standard library (python3-tk on Linux)
