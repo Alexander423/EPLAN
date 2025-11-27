@@ -1,5 +1,5 @@
 """
-Panel components for the GUI (Progress, Status, Log).
+Clean panel components for the GUI.
 """
 
 from __future__ import annotations
@@ -13,182 +13,135 @@ from .theme import Theme
 
 
 class ProgressIndicator(tk.Canvas):
-    """Animated progress indicator with steps."""
+    """Simple step-based progress indicator."""
 
-    STEPS = [
-        ("Login", "Authenticating with Microsoft"),
-        ("Project", "Opening project"),
-        ("Extract", "Extracting variables"),
-        ("Export", "Saving results")
-    ]
+    STEPS = ["Login", "Project", "Extract", "Export"]
 
     def __init__(self, parent: tk.Widget, **kwargs) -> None:
         super().__init__(
             parent,
-            height=80,
+            height=60,
             bg=Theme.BG_CARD,
             highlightthickness=0,
             **kwargs
         )
-
         self._current_step = -1
         self._progress = 0.0
-        self._animation_id: Optional[str] = None
-
         self.bind("<Configure>", lambda e: self._draw())
 
     def _draw(self) -> None:
-        """Draw the progress indicator."""
         self.delete("all")
 
         width = self.winfo_width()
         if width < 10:
             return
 
-        step_count = len(self.STEPS)
-        step_width = (width - 40) / (step_count - 1)
-        y_line = 25
-        y_text = 55
+        steps = len(self.STEPS)
+        step_width = (width - 60) / (steps - 1)
+        y = 20
 
-        # Draw connecting line (background)
-        self.create_line(
-            20, y_line, width - 20, y_line,
-            fill=Theme.BORDER_COLOR,
-            width=3,
-            capstyle="round"
-        )
+        # Background line
+        self.create_line(30, y, width - 30, y, fill=Theme.BORDER_COLOR, width=2)
 
-        # Draw progress line
+        # Progress line
         if self._current_step >= 0:
-            progress_width = 20 + (self._current_step * step_width) + (self._progress * step_width)
-            progress_width = min(progress_width, width - 20)
-            self.create_line(
-                20, y_line, progress_width, y_line,
-                fill=Theme.ACCENT_PRIMARY,
-                width=3,
-                capstyle="round"
-            )
+            progress_x = 30 + (self._current_step * step_width) + (self._progress * step_width)
+            progress_x = min(progress_x, width - 30)
+            self.create_line(30, y, progress_x, y, fill=Theme.ACCENT_PRIMARY, width=2)
 
-        # Draw step circles and labels
-        for i, (name, desc) in enumerate(self.STEPS):
-            x = 20 + i * step_width
+        # Step circles
+        for i, name in enumerate(self.STEPS):
+            x = 30 + i * step_width
 
-            # Circle
             if i < self._current_step:
-                # Completed
                 color = Theme.ACCENT_SUCCESS
-                text_color = Theme.TEXT_PRIMARY
+                fg = Theme.TEXT_PRIMARY
             elif i == self._current_step:
-                # Current
                 color = Theme.ACCENT_PRIMARY
-                text_color = Theme.TEXT_PRIMARY
+                fg = Theme.TEXT_PRIMARY
             else:
-                # Pending
                 color = Theme.BORDER_COLOR
-                text_color = Theme.TEXT_MUTED
+                fg = Theme.TEXT_MUTED
 
-            self.create_oval(
-                x - 12, y_line - 12, x + 12, y_line + 12,
-                fill=color,
-                outline=""
-            )
-
-            # Step number or checkmark
-            if i < self._current_step:
-                self.create_text(x, y_line, text="✓", fill="white", font=(Theme.FONT_FAMILY, 10, "bold"))
-            else:
-                self.create_text(x, y_line, text=str(i + 1), fill="white", font=(Theme.FONT_FAMILY, 10, "bold"))
-
-            # Label
-            self.create_text(
-                x, y_text,
-                text=name,
-                fill=text_color,
-                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-            )
+            self.create_oval(x - 8, y - 8, x + 8, y + 8, fill=color, outline="")
+            self.create_text(x, y, text=str(i + 1), fill="#fff", font=(Theme.FONT_FAMILY, 8))
+            self.create_text(x, y + 25, text=name, fill=fg, font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL))
 
     def set_step(self, step: int, progress: float = 0.0) -> None:
-        """Set the current step and progress."""
         self._current_step = step
         self._progress = max(0.0, min(1.0, progress))
         self._draw()
 
     def reset(self) -> None:
-        """Reset the progress indicator."""
         self._current_step = -1
         self._progress = 0.0
         self._draw()
 
 
 class StatusBar(tk.Frame):
-    """Modern status bar with icon and message."""
+    """Simple status bar."""
 
     def __init__(self, parent: tk.Widget, **kwargs) -> None:
         super().__init__(parent, bg=Theme.BG_SECONDARY, **kwargs)
 
-        # Status icon
-        self._icon_label = tk.Label(
+        self._dot = tk.Label(
             self,
-            text="●",
+            text="",
             bg=Theme.BG_SECONDARY,
             fg=Theme.STATUS_IDLE,
-            font=(Theme.FONT_FAMILY, 12)
+            font=(Theme.FONT_FAMILY, 8)
         )
-        self._icon_label.pack(side="left", padx=(15, 8), pady=10)
+        self._dot.pack(side="left", padx=(15, 8), pady=8)
 
-        # Status text
-        self._text_label = tk.Label(
+        self._text = tk.Label(
             self,
             text="Ready",
             bg=Theme.BG_SECONDARY,
             fg=Theme.TEXT_SECONDARY,
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
             anchor="w"
         )
-        self._text_label.pack(side="left", fill="x", expand=True, pady=10)
+        self._text.pack(side="left", fill="x", expand=True, pady=8)
 
-        # Version
-        self._version_label = tk.Label(
+        self._version = tk.Label(
             self,
             text=f"v{VERSION}",
             bg=Theme.BG_SECONDARY,
             fg=Theme.TEXT_MUTED,
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
         )
-        self._version_label.pack(side="right", padx=15, pady=10)
+        self._version.pack(side="right", padx=15, pady=8)
 
     def set_status(self, message: str, status: str = "idle") -> None:
-        """Set status message and state."""
-        self._text_label.config(text=message)
-
+        self._text.config(text=message)
         colors = {
             "idle": Theme.STATUS_IDLE,
             "running": Theme.STATUS_RUNNING,
             "success": Theme.STATUS_SUCCESS,
-            "error": Theme.STATUS_ERROR
+            "error": Theme.STATUS_ERROR,
+            "info": Theme.ACCENT_PRIMARY
         }
-        self._icon_label.config(fg=colors.get(status, Theme.STATUS_IDLE))
+        self._dot.config(fg=colors.get(status, Theme.STATUS_IDLE))
 
 
 class LogPanel(tk.Frame):
-    """Modern log panel with colored output."""
+    """Clean log panel."""
 
     def __init__(self, parent: tk.Widget, **kwargs) -> None:
         super().__init__(parent, bg=Theme.BG_SECONDARY, **kwargs)
 
         # Header
         header = tk.Frame(self, bg=Theme.BG_SECONDARY)
-        header.pack(fill="x", padx=15, pady=(15, 10))
+        header.pack(fill="x", padx=12, pady=(12, 8))
 
         tk.Label(
             header,
-            text="Activity Log",
+            text="Log",
             bg=Theme.BG_SECONDARY,
             fg=Theme.TEXT_PRIMARY,
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING)
         ).pack(side="left")
 
-        # Clear button
         clear_btn = tk.Label(
             header,
             text="Clear",
@@ -202,22 +155,23 @@ class LogPanel(tk.Frame):
         clear_btn.bind("<Enter>", lambda e: clear_btn.config(fg=Theme.TEXT_PRIMARY))
         clear_btn.bind("<Leave>", lambda e: clear_btn.config(fg=Theme.TEXT_MUTED))
 
-        # Log text area
+        # Log area
         self._text = tk.Text(
             self,
             bg=Theme.BG_PRIMARY,
             fg=Theme.TEXT_SECONDARY,
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
             relief="flat",
-            padx=15,
-            pady=10,
+            padx=12,
+            pady=8,
             wrap="word",
-            state="disabled"
+            state="disabled",
+            height=8
         )
-        self._text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self._text.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        # Configure tags for colored output
-        self._text.tag_configure("timestamp", foreground=Theme.TEXT_MUTED)
+        # Tags
+        self._text.tag_configure("time", foreground=Theme.TEXT_MUTED)
         self._text.tag_configure("DEBUG", foreground=Theme.TEXT_MUTED)
         self._text.tag_configure("INFO", foreground=Theme.TEXT_SECONDARY)
         self._text.tag_configure("WARNING", foreground=Theme.ACCENT_WARNING)
@@ -230,18 +184,14 @@ class LogPanel(tk.Frame):
         self._text.config(yscrollcommand=scrollbar.set)
 
     def log(self, message: str, level: str = "INFO") -> None:
-        """Add a log message."""
         self._text.config(state="normal")
-
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self._text.insert("end", f"[{timestamp}] ", "timestamp")
+        time = datetime.now().strftime("%H:%M:%S")
+        self._text.insert("end", f"[{time}] ", "time")
         self._text.insert("end", f"{message}\n", level)
-
         self._text.see("end")
         self._text.config(state="disabled")
 
     def clear(self) -> None:
-        """Clear the log."""
         self._text.config(state="normal")
         self._text.delete("1.0", "end")
         self._text.config(state="disabled")
