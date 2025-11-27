@@ -4,20 +4,26 @@ Main GUI application for EPLAN eVIEW Text Extractor.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
+import time
 import tkinter as tk
-from tkinter import messagebox
+from datetime import datetime
+from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 from ..constants import BASE_URL, VERSION
 from ..core.cache import CacheManager
-from ..core.config import AppConfig, ConfigManager
+from ..core.config import AppConfig, ConfigManager, ExtractionRecord
 from ..core.extractor import SeleniumEPlanExtractor
 from ..core.updater import UpdateChecker, UpdateDownloader, ReleaseInfo, format_size
 from ..utils.logging import get_logger
+from ..utils.i18n import I18n, t
+from ..utils.notifications import NotificationManager
 from .panels import LogPanel, ProgressIndicator, StatusBar
 from .theme import Theme
+from .tray import SystemTray
 from .widgets import (
     ModernButton,
     ModernCheckbox,
@@ -50,15 +56,21 @@ class EPlanExtractorGUI:
     - Password visibility toggle
     - Input validation
     - Tooltips for help
-    - Professional typography
+    - Multi-language support (EN/DE)
+    - System tray integration
+    - Desktop notifications
+    - Keyboard shortcuts
+    - Recent projects dropdown
+    - Extraction history
+    - Statistics dashboard
     """
 
     def __init__(self, root: tk.Tk) -> None:
         """Initialize the GUI."""
         self.root = root
-        self.root.title("EPLAN eVIEW Extractor")
-        self.root.geometry("720x850")
-        self.root.minsize(620, 750)
+        self.root.title(t("app_title"))
+        self.root.geometry("720x900")
+        self.root.minsize(620, 800)
         self.root.configure(bg=Theme.get_color("BG_PRIMARY"))
 
         # Try to set window icon (if available)
@@ -73,6 +85,7 @@ class EPlanExtractorGUI:
         self._extractor: Optional[SeleniumEPlanExtractor] = None
         self._is_running = False
         self._current_step = -1
+        self._extraction_start_time = 0.0
 
         # Variables
         self._username_var = tk.StringVar()
@@ -81,10 +94,34 @@ class EPlanExtractorGUI:
         self._headless_var = tk.BooleanVar(value=True)
         self._export_excel_var = tk.BooleanVar(value=True)
         self._export_csv_var = tk.BooleanVar(value=False)
+        self._export_json_var = tk.BooleanVar(value=False)
         self._save_credentials_var = tk.BooleanVar(value=True)
-        self._auto_open_file_var = tk.BooleanVar(value=False)
+        self._output_dir_var = tk.StringVar()
+
+        # Load config first to get settings
+        self._config = self._config_manager.load()
+
+        # Set language from config
+        I18n.set_language(self._config.language)
+
+        # Set up notifications
+        NotificationManager.set_enabled(self._config.show_notifications)
+
+        # Set up system tray
+        self._tray = SystemTray(
+            root,
+            on_show=self._restore_window,
+            on_quit=self._quit_app,
+            on_start=self._start_extraction,
+            on_stop=self._stop_extraction
+        )
+
+        if self._config.minimize_to_tray and self._tray.is_available():
+            self._tray.set_enabled(True)
+            self._tray.start()
 
         self._setup_ui()
+        self._setup_keyboard_shortcuts()
         self._load_config()
 
         # Register logger callback
@@ -92,6 +129,22 @@ class EPlanExtractorGUI:
 
         # Register theme observer
         Theme.add_observer(self._on_theme_change)
+
+        # Handle window close
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Check for updates on startup if enabled
+        if self._config.check_updates_on_startup:
+            self.root.after(2000, self._check_updates_on_startup)
+
+    def _setup_keyboard_shortcuts(self) -> None:
+        """Set up keyboard shortcuts."""
+        self.root.bind("<Control-Return>", lambda e: self._start_extraction())
+        self.root.bind("<Escape>", lambda e: self._stop_extraction() if self._is_running else None)
+        self.root.bind("<Control-comma>", lambda e: self._show_settings())
+        self.root.bind("<Control-q>", lambda e: self._quit_app())
+        self.root.bind("<Control-h>", lambda e: self._show_history())
+        self.root.bind("<F1>", lambda e: self._show_shortcuts_help())
 
     def _setup_ui(self) -> None:
         """Set up the modern user interface."""
@@ -136,7 +189,7 @@ class EPlanExtractorGUI:
 
         self._title_eplan = tk.Label(
             title_frame,
-            text="EPLAN",
+            text=t("eplan"),
             bg=Theme.get_color("BG_PRIMARY"),
             fg=Theme.get_color("ACCENT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE, "bold")
@@ -145,7 +198,7 @@ class EPlanExtractorGUI:
 
         self._title_extractor = tk.Label(
             title_frame,
-            text=" eVIEW Extractor",
+            text=t("eview_extractor"),
             bg=Theme.get_color("BG_PRIMARY"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE)
@@ -166,6 +219,36 @@ class EPlanExtractorGUI:
         controls_frame = tk.Frame(self._header, bg=Theme.get_color("BG_PRIMARY"))
         controls_frame.pack(side="right")
 
+        # History button
+        self._history_btn = tk.Label(
+            controls_frame,
+            text="📋",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, 16),
+            cursor="hand2"
+        )
+        self._history_btn.pack(side="left", padx=8)
+        self._history_btn.bind("<Button-1>", lambda e: self._show_history())
+        self._history_btn.bind("<Enter>", lambda e: self._history_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
+        self._history_btn.bind("<Leave>", lambda e: self._history_btn.config(fg=Theme.get_color("TEXT_MUTED")))
+        Tooltip(self._history_btn, t("extraction_history"))
+
+        # Statistics button
+        self._stats_btn = tk.Label(
+            controls_frame,
+            text="📊",
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, 16),
+            cursor="hand2"
+        )
+        self._stats_btn.pack(side="left", padx=8)
+        self._stats_btn.bind("<Button-1>", lambda e: self._show_statistics())
+        self._stats_btn.bind("<Enter>", lambda e: self._stats_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
+        self._stats_btn.bind("<Leave>", lambda e: self._stats_btn.config(fg=Theme.get_color("TEXT_MUTED")))
+        Tooltip(self._stats_btn, t("statistics"))
+
         # Theme toggle (mini)
         self._theme_btn = tk.Label(
             controls_frame,
@@ -179,7 +262,7 @@ class EPlanExtractorGUI:
         self._theme_btn.bind("<Button-1>", self._toggle_theme)
         self._theme_btn.bind("<Enter>", lambda e: self._theme_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
         self._theme_btn.bind("<Leave>", lambda e: self._theme_btn.config(fg=Theme.get_color("TEXT_MUTED")))
-        Tooltip(self._theme_btn, "Toggle Dark/Light Mode")
+        Tooltip(self._theme_btn, t("dark_mode") if Theme.is_dark_mode() else t("light_mode"))
 
         # Settings button
         self._settings_btn = tk.Label(
@@ -194,7 +277,7 @@ class EPlanExtractorGUI:
         self._settings_btn.bind("<Enter>", lambda e: self._settings_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
         self._settings_btn.bind("<Leave>", lambda e: self._settings_btn.config(fg=Theme.get_color("TEXT_MUTED")))
         self._settings_btn.bind("<Button-1>", lambda e: self._show_settings())
-        Tooltip(self._settings_btn, "Open Settings")
+        Tooltip(self._settings_btn, t("settings_title") + " (Ctrl+,)")
 
     def _create_card(self, parent: tk.Widget, title: str, icon: str = "") -> tk.Frame:
         """Create a card container."""
@@ -230,7 +313,7 @@ class EPlanExtractorGUI:
 
     def _create_credentials_card(self, parent: tk.Widget) -> None:
         """Create the credentials input card."""
-        content = self._create_card(parent, "Microsoft Credentials", "🔐")
+        content = self._create_card(parent, t("microsoft_credentials"), "🔐")
 
         # Email
         email_label_row = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
@@ -238,7 +321,7 @@ class EPlanExtractorGUI:
 
         tk.Label(
             email_label_row,
-            text="Email Address",
+            text=t("email_address"),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_SECONDARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
@@ -254,9 +337,9 @@ class EPlanExtractorGUI:
 
         self._email_entry = ModernEntry(
             content,
-            placeholder="your.email@company.com",
+            placeholder=t("email_placeholder"),
             textvariable=self._username_var,
-            tooltip="Enter your Microsoft account email",
+            tooltip=t("email_tooltip"),
             validate_func=validate_email
         )
         self._email_entry.pack(fill="x", pady=(0, 15))
@@ -267,7 +350,7 @@ class EPlanExtractorGUI:
 
         tk.Label(
             password_label_row,
-            text="Password",
+            text=t("password"),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_SECONDARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
@@ -283,19 +366,19 @@ class EPlanExtractorGUI:
 
         self._password_entry = PasswordEntry(
             content,
-            placeholder="Enter your password",
+            placeholder=t("password_placeholder"),
             textvariable=self._password_var,
-            tooltip="Enter your Microsoft account password (shown as dots for security)"
+            tooltip=t("password_tooltip")
         )
         self._password_entry.pack(fill="x", pady=(0, 15))
 
-        # Project Number
+        # Project Number with recent projects dropdown
         project_label_row = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
         project_label_row.pack(fill="x", pady=(0, 5))
 
         tk.Label(
             project_label_row,
-            text="Project Number",
+            text=t("project_number"),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_SECONDARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
@@ -309,18 +392,53 @@ class EPlanExtractorGUI:
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
         ).pack(side="left")
 
+        # Project entry with dropdown
+        project_frame = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
+        project_frame.pack(fill="x")
+
         self._project_entry = ModernEntry(
-            content,
-            placeholder="e.g., PROJECT-001",
+            project_frame,
+            placeholder=t("project_placeholder"),
             textvariable=self._project_var,
-            tooltip="Enter the EPLAN project number to extract",
+            tooltip=t("project_tooltip"),
             validate_func=validate_project
         )
-        self._project_entry.pack(fill="x")
+        self._project_entry.pack(side="left", fill="x", expand=True)
+
+        # Recent projects dropdown button
+        recent_projects = self._config_manager.get_recent_projects()
+        if recent_projects:
+            self._recent_btn = tk.Label(
+                project_frame,
+                text="▼",
+                bg=Theme.get_color("BG_CARD"),
+                fg=Theme.get_color("TEXT_MUTED"),
+                font=(Theme.FONT_FAMILY, 10),
+                cursor="hand2"
+            )
+            self._recent_btn.pack(side="right", padx=(5, 0))
+            self._recent_btn.bind("<Button-1>", self._show_recent_projects)
+            Tooltip(self._recent_btn, t("recent_projects"))
+
+    def _show_recent_projects(self, event: tk.Event) -> None:
+        """Show recent projects dropdown."""
+        recent_projects = self._config_manager.get_recent_projects()
+        if not recent_projects:
+            return
+
+        menu = tk.Menu(self.root, tearoff=0)
+
+        for project in recent_projects[:10]:
+            menu.add_command(
+                label=project,
+                command=lambda p=project: self._project_var.set(p)
+            )
+
+        menu.post(event.x_root, event.y_root)
 
     def _create_options_card(self, parent: tk.Widget) -> None:
         """Create the options card."""
-        content = self._create_card(parent, "Options", "⚙")
+        content = self._create_card(parent, t("options"), "⚙")
 
         options_grid = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
         options_grid.pack(fill="x")
@@ -331,7 +449,7 @@ class EPlanExtractorGUI:
 
         tk.Label(
             left_col,
-            text="Export Format",
+            text=t("export_format"),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_MUTED"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
@@ -339,16 +457,23 @@ class EPlanExtractorGUI:
 
         ModernCheckbox(
             left_col,
-            text="Excel (.xlsx)",
+            text=t("excel_xlsx"),
             variable=self._export_excel_var,
-            tooltip="Export results to Excel format"
+            tooltip=t("export_tooltip_excel")
         ).pack(anchor="w", pady=2)
 
         ModernCheckbox(
             left_col,
-            text="CSV (.csv)",
+            text=t("csv_file"),
             variable=self._export_csv_var,
-            tooltip="Export results to CSV format"
+            tooltip=t("export_tooltip_csv")
+        ).pack(anchor="w", pady=2)
+
+        ModernCheckbox(
+            left_col,
+            text=t("json_file"),
+            variable=self._export_json_var,
+            tooltip=t("export_tooltip_json")
         ).pack(anchor="w", pady=2)
 
         # Right column - Behavior options
@@ -357,7 +482,7 @@ class EPlanExtractorGUI:
 
         tk.Label(
             right_col,
-            text="Behavior",
+            text=t("behavior"),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_MUTED"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
@@ -365,17 +490,56 @@ class EPlanExtractorGUI:
 
         ModernCheckbox(
             right_col,
-            text="Run in Background",
+            text=t("run_in_background"),
             variable=self._headless_var,
-            tooltip="Run browser in headless mode (no visible window)"
+            tooltip=t("headless_tooltip")
         ).pack(anchor="w", pady=2)
 
         ModernCheckbox(
             right_col,
-            text="Save Credentials",
+            text=t("save_credentials"),
             variable=self._save_credentials_var,
-            tooltip="Remember your login credentials (encrypted)"
+            tooltip=t("save_creds_tooltip")
         ).pack(anchor="w", pady=2)
+
+        # Output directory
+        output_frame = tk.Frame(content, bg=Theme.get_color("BG_CARD"))
+        output_frame.pack(fill="x", pady=(15, 0))
+
+        tk.Label(
+            output_frame,
+            text=t("output_directory"),
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 5))
+
+        dir_row = tk.Frame(output_frame, bg=Theme.get_color("BG_CARD"))
+        dir_row.pack(fill="x")
+
+        self._output_dir_entry = ModernEntry(
+            dir_row,
+            placeholder=t("default_directory"),
+            textvariable=self._output_dir_var
+        )
+        self._output_dir_entry.pack(side="left", fill="x", expand=True)
+
+        ModernButton(
+            dir_row,
+            text=t("browse"),
+            command=self._browse_output_dir,
+            primary=False,
+            width=80
+        ).pack(side="right", padx=(10, 0))
+
+    def _browse_output_dir(self) -> None:
+        """Open directory browser for output."""
+        directory = filedialog.askdirectory(
+            title=t("output_directory"),
+            initialdir=self._output_dir_var.get() or os.getcwd()
+        )
+        if directory:
+            self._output_dir_var.set(directory)
 
     def _create_progress_card(self, parent: tk.Widget) -> None:
         """Create the progress indicator card."""
@@ -396,7 +560,7 @@ class EPlanExtractorGUI:
 
         tk.Label(
             title_row,
-            text="Extraction Progress",
+            text=t("extraction_progress"),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
@@ -416,21 +580,21 @@ class EPlanExtractorGUI:
 
         self._start_button = ModernButton(
             inner_frame,
-            text="▶  Start Extraction",
+            text="▶  " + t("start_extraction"),
             command=self._start_extraction,
             primary=True,
             width=180,
-            tooltip="Start the extraction process"
+            tooltip=t("start_tooltip") + " (Ctrl+Enter)"
         )
         self._start_button.pack(side="left", padx=5)
 
         self._stop_button = ModernButton(
             inner_frame,
-            text="■  Stop",
+            text="■  " + t("stop"),
             command=self._stop_extraction,
             primary=False,
             width=100,
-            tooltip="Stop the running extraction"
+            tooltip=t("stop_tooltip") + " (Esc)"
         )
         self._stop_button.pack(side="left", padx=5)
         self._stop_button.set_enabled(False)
@@ -447,263 +611,451 @@ class EPlanExtractorGUI:
         self._logger.info(f"Switched to {'dark' if is_dark else 'light'} mode")
 
     def _on_theme_change(self) -> None:
-        """Handle theme change - requires restart for full effect."""
-        # Update header background
+        """Handle theme change."""
         is_dark = Theme.is_dark_mode()
         self._theme_btn.config(text="🌙" if is_dark else "☀")
 
-        # Note: Full theme change requires app restart
-        # This just updates the toggle icon
+    def _on_close(self) -> None:
+        """Handle window close."""
+        if self._config.minimize_to_tray and self._tray.is_enabled():
+            self._tray.minimize_to_tray()
+        else:
+            self._quit_app()
+
+    def _restore_window(self) -> None:
+        """Restore window from tray."""
+        self._tray.restore_from_tray()
+
+    def _quit_app(self) -> None:
+        """Quit the application."""
+        if self._is_running:
+            if not messagebox.askyesno(
+                t("app_title"),
+                "Extraction is running. Are you sure you want to quit?"
+            ):
+                return
+            self._stop_extraction()
+
+        self._tray.stop()
+        self.root.destroy()
+
+    def _check_updates_on_startup(self) -> None:
+        """Check for updates on startup (silent)."""
+        def check():
+            try:
+                checker = UpdateChecker()
+                release = checker.check_for_updates()
+                if release:
+                    self.root.after(0, lambda: self._notify_update_available(release))
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=check, daemon=True)
+        thread.start()
+
+    def _notify_update_available(self, release: ReleaseInfo) -> None:
+        """Notify user about available update."""
+        self._status_bar.set_status(
+            t("update_available", version=release.version),
+            "info"
+        )
+        NotificationManager.notify_update_available(release.version)
 
     def _show_settings(self) -> None:
         """Show settings dialog."""
-        # Create settings window
         settings_win = tk.Toplevel(self.root)
-        settings_win.title("Settings")
-        settings_win.geometry("480x500")
+        settings_win.title(t("settings_title"))
+        settings_win.geometry("520x650")
         settings_win.configure(bg=Theme.get_color("BG_PRIMARY"))
         settings_win.transient(self.root)
         settings_win.grab_set()
+        settings_win.geometry(f"+{self.root.winfo_x() + 100}+{self.root.winfo_y() + 50}")
 
-        # Center on parent
-        settings_win.geometry(f"+{self.root.winfo_x() + 100}+{self.root.winfo_y() + 100}")
+        # Create scrollable canvas
+        canvas = tk.Canvas(settings_win, bg=Theme.get_color("BG_PRIMARY"), highlightthickness=0)
+        scrollbar = ttk.Scrollbar(settings_win, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=Theme.get_color("BG_PRIMARY"))
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
         # Title
-        header = tk.Frame(settings_win, bg=Theme.get_color("BG_PRIMARY"))
+        header = tk.Frame(scrollable_frame, bg=Theme.get_color("BG_PRIMARY"))
         header.pack(fill="x", padx=20, pady=20)
 
         tk.Label(
             header,
-            text="⚙  Settings",
+            text="⚙  " + t("settings_title"),
             bg=Theme.get_color("BG_PRIMARY"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE - 4, "bold")
         ).pack(side="left")
 
         # Appearance section
-        appearance_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
-        appearance_frame.pack(fill="x", padx=20, pady=10)
+        self._create_settings_section(
+            scrollable_frame, "🎨", t("appearance"),
+            lambda parent: self._create_appearance_settings(parent, settings_win)
+        )
 
-        tk.Label(
-            appearance_frame,
-            text="🎨  Appearance",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_PRIMARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
-        ).pack(anchor="w", padx=15, pady=(15, 10))
+        # Language section
+        self._create_settings_section(
+            scrollable_frame, "🌐", t("language"),
+            lambda parent: self._create_language_settings(parent, settings_win)
+        )
 
-        # Theme toggle
-        theme_row = tk.Frame(appearance_frame, bg=Theme.get_color("BG_CARD"))
-        theme_row.pack(fill="x", padx=15, pady=(0, 15))
+        # Notifications section
+        self._create_settings_section(
+            scrollable_frame, "🔔", t("notifications"),
+            lambda parent: self._create_notification_settings(parent)
+        )
 
-        ThemeToggle(
-            theme_row,
-            command=lambda is_dark: self._apply_theme(is_dark, settings_win)
-        ).pack(anchor="w")
-
-        tk.Label(
-            theme_row,
-            text="(Requires restart for full effect)",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(5, 0))
+        # Network section
+        self._create_settings_section(
+            scrollable_frame, "🌐", t("network"),
+            lambda parent: self._create_proxy_settings(parent)
+        )
 
         # Cache section
-        cache_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
-        cache_frame.pack(fill="x", padx=20, pady=10)
-
-        tk.Label(
-            cache_frame,
-            text="💾  Cache Management",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_PRIMARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
-        ).pack(anchor="w", padx=15, pady=(15, 5))
-
-        tk.Label(
-            cache_frame,
-            text="Cached data speeds up re-extraction of the same pages.",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", padx=15, pady=(0, 10))
-
-        cache_btn_row = tk.Frame(cache_frame, bg=Theme.get_color("BG_CARD"))
-        cache_btn_row.pack(fill="x", padx=15, pady=(0, 15))
-
-        ModernButton(
-            cache_btn_row,
-            text="🗑  Clear Cache",
-            command=lambda: self._clear_cache_action(settings_win),
-            primary=False,
-            width=140,
-            tooltip="Delete all cached extraction data"
-        ).pack(side="left")
+        self._create_settings_section(
+            scrollable_frame, "💾", t("cache_management"),
+            lambda parent: self._create_cache_settings(parent, settings_win)
+        )
 
         # Security section
-        security_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
-        security_frame.pack(fill="x", padx=20, pady=10)
-
-        tk.Label(
-            security_frame,
-            text="🔒  Security",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_PRIMARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
-        ).pack(anchor="w", padx=15, pady=(15, 5))
-
-        tk.Label(
-            security_frame,
-            text="Your password is stored encrypted using Fernet encryption.",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", padx=15, pady=(0, 10))
-
-        security_btn_row = tk.Frame(security_frame, bg=Theme.get_color("BG_CARD"))
-        security_btn_row.pack(fill="x", padx=15, pady=(0, 15))
-
-        ModernButton(
-            security_btn_row,
-            text="🔑  Clear Saved Credentials",
-            command=lambda: self._clear_credentials_action(settings_win),
-            primary=False,
-            width=200,
-            tooltip="Delete saved login credentials"
-        ).pack(side="left")
+        self._create_settings_section(
+            scrollable_frame, "🔒", t("security"),
+            lambda parent: self._create_security_settings(parent, settings_win)
+        )
 
         # Updates section
-        updates_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
-        updates_frame.pack(fill="x", padx=20, pady=10)
-
-        tk.Label(
-            updates_frame,
-            text="🔄  Updates",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_PRIMARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
-        ).pack(anchor="w", padx=15, pady=(15, 5))
-
-        tk.Label(
-            updates_frame,
-            text=f"Current version: v{VERSION}",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", padx=15, pady=(0, 5))
-
-        # Update status label
-        self._update_status_label = tk.Label(
-            updates_frame,
-            text="",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        self._create_settings_section(
+            scrollable_frame, "🔄", t("updates"),
+            lambda parent: self._create_update_settings(parent, settings_win)
         )
-        self._update_status_label.pack(anchor="w", padx=15, pady=(0, 10))
-
-        update_btn_row = tk.Frame(updates_frame, bg=Theme.get_color("BG_CARD"))
-        update_btn_row.pack(fill="x", padx=15, pady=(0, 15))
-
-        self._check_update_btn = ModernButton(
-            update_btn_row,
-            text="🔍  Check for Updates",
-            command=lambda: self._check_for_updates(settings_win),
-            primary=False,
-            width=180,
-            tooltip="Check GitHub for new releases"
-        )
-        self._check_update_btn.pack(side="left")
 
         # About section
-        about_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_CARD"))
-        about_frame.pack(fill="x", padx=20, pady=10)
+        self._create_settings_section(
+            scrollable_frame, "ℹ", t("about"),
+            lambda parent: self._create_about_section(parent)
+        )
 
-        tk.Label(
-            about_frame,
-            text="ℹ  About",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_PRIMARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
-        ).pack(anchor="w", padx=15, pady=(15, 5))
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
-        tk.Label(
-            about_frame,
-            text=f"EPLAN eVIEW Extractor v{VERSION}\n"
-                 "Extracts PLC variables from EPLAN eVIEW diagrams.\n"
-                 "© 2024 EPLAN Extractor Team",
-            bg=Theme.get_color("BG_CARD"),
-            fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
-            justify="left"
-        ).pack(anchor="w", padx=15, pady=(0, 15))
-
-        # Close button
+        # Close button at bottom
         close_frame = tk.Frame(settings_win, bg=Theme.get_color("BG_PRIMARY"))
-        close_frame.pack(fill="x", padx=20, pady=15)
+        close_frame.pack(fill="x", side="bottom", padx=20, pady=15)
 
         ModernButton(
             close_frame,
-            text="Close",
+            text=t("close"),
             command=settings_win.destroy,
             primary=True,
             width=100
         ).pack(side="right")
 
+    def _create_settings_section(self, parent, icon, title, content_creator) -> None:
+        """Create a settings section."""
+        frame = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
+        frame.pack(fill="x", padx=20, pady=5)
+
+        tk.Label(
+            frame,
+            text=f"{icon}  {title}",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+        ).pack(anchor="w", padx=15, pady=(15, 10))
+
+        content_frame = tk.Frame(frame, bg=Theme.get_color("BG_CARD"))
+        content_frame.pack(fill="x", padx=15, pady=(0, 15))
+
+        content_creator(content_frame)
+
+    def _create_appearance_settings(self, parent, settings_win) -> None:
+        """Create appearance settings."""
+        ThemeToggle(
+            parent,
+            command=lambda is_dark: self._apply_theme(is_dark, settings_win)
+        ).pack(anchor="w")
+
+        tk.Label(
+            parent,
+            text=t("theme_restart_note"),
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(5, 0))
+
+    def _create_language_settings(self, parent, settings_win) -> None:
+        """Create language settings."""
+        lang_var = tk.StringVar(value=I18n.get_language())
+
+        lang_frame = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
+        lang_frame.pack(fill="x")
+
+        for code, name in I18n.get_available_languages().items():
+            tk.Radiobutton(
+                lang_frame,
+                text=name,
+                variable=lang_var,
+                value=code,
+                bg=Theme.get_color("BG_CARD"),
+                fg=Theme.get_color("TEXT_PRIMARY"),
+                selectcolor=Theme.get_color("BG_INPUT"),
+                activebackground=Theme.get_color("BG_CARD"),
+                activeforeground=Theme.get_color("TEXT_PRIMARY"),
+                command=lambda: self._change_language(lang_var.get(), settings_win)
+            ).pack(side="left", padx=(0, 20))
+
+    def _change_language(self, lang: str, settings_win) -> None:
+        """Change application language."""
+        I18n.set_language(lang)
+        self._config.language = lang
+        self._config_manager.save(self._config)
+
+        messagebox.showinfo(
+            t("language"),
+            "Language changed. Please restart the application for full effect.",
+            parent=settings_win
+        )
+
+    def _create_notification_settings(self, parent) -> None:
+        """Create notification settings."""
+        notif_var = tk.BooleanVar(value=self._config.show_notifications)
+        tray_var = tk.BooleanVar(value=self._config.minimize_to_tray)
+
+        def save_notif():
+            self._config.show_notifications = notif_var.get()
+            NotificationManager.set_enabled(notif_var.get())
+            self._config_manager.save(self._config)
+
+        def save_tray():
+            self._config.minimize_to_tray = tray_var.get()
+            self._tray.set_enabled(tray_var.get())
+            self._config_manager.save(self._config)
+
+        ModernCheckbox(
+            parent,
+            text=t("show_notifications"),
+            variable=notif_var,
+            command=save_notif
+        ).pack(anchor="w", pady=2)
+
+        if self._tray.is_available():
+            ModernCheckbox(
+                parent,
+                text=t("minimize_to_tray"),
+                variable=tray_var,
+                command=save_tray
+            ).pack(anchor="w", pady=2)
+
+    def _create_proxy_settings(self, parent) -> None:
+        """Create proxy settings."""
+        proxy_var = tk.BooleanVar(value=self._config.proxy_enabled)
+        host_var = tk.StringVar(value=self._config.proxy_host)
+        port_var = tk.StringVar(value=str(self._config.proxy_port))
+
+        def save_proxy():
+            self._config.proxy_enabled = proxy_var.get()
+            self._config.proxy_host = host_var.get()
+            try:
+                self._config.proxy_port = int(port_var.get())
+            except ValueError:
+                self._config.proxy_port = 8080
+            self._config_manager.save(self._config)
+
+        ModernCheckbox(
+            parent,
+            text=t("enable_proxy"),
+            variable=proxy_var,
+            command=save_proxy
+        ).pack(anchor="w", pady=2)
+
+        proxy_frame = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
+        proxy_frame.pack(fill="x", pady=(10, 0))
+
+        tk.Label(
+            proxy_frame,
+            text=t("proxy_host") + ":",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_SECONDARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(side="left")
+
+        host_entry = tk.Entry(
+            proxy_frame,
+            textvariable=host_var,
+            width=25,
+            bg=Theme.get_color("BG_INPUT"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            insertbackground=Theme.get_color("TEXT_PRIMARY")
+        )
+        host_entry.pack(side="left", padx=5)
+        host_entry.bind("<FocusOut>", lambda e: save_proxy())
+
+        tk.Label(
+            proxy_frame,
+            text=t("proxy_port") + ":",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_SECONDARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(side="left", padx=(10, 0))
+
+        port_entry = tk.Entry(
+            proxy_frame,
+            textvariable=port_var,
+            width=6,
+            bg=Theme.get_color("BG_INPUT"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            insertbackground=Theme.get_color("TEXT_PRIMARY")
+        )
+        port_entry.pack(side="left", padx=5)
+        port_entry.bind("<FocusOut>", lambda e: save_proxy())
+
+    def _create_cache_settings(self, parent, settings_win) -> None:
+        """Create cache settings."""
+        tk.Label(
+            parent,
+            text=t("cache_description"),
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 10))
+
+        ModernButton(
+            parent,
+            text="🗑  " + t("clear_cache"),
+            command=lambda: self._clear_cache_action(settings_win),
+            primary=False,
+            width=140
+        ).pack(anchor="w")
+
+    def _create_security_settings(self, parent, settings_win) -> None:
+        """Create security settings."""
+        tk.Label(
+            parent,
+            text=t("security_description"),
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 10))
+
+        ModernButton(
+            parent,
+            text="🔑  " + t("clear_credentials"),
+            command=lambda: self._clear_credentials_action(settings_win),
+            primary=False,
+            width=200
+        ).pack(anchor="w")
+
+    def _create_update_settings(self, parent, settings_win) -> None:
+        """Create update settings."""
+        tk.Label(
+            parent,
+            text=t("current_version", version=VERSION),
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        ).pack(anchor="w", pady=(0, 5))
+
+        self._update_status_label = tk.Label(
+            parent,
+            text="",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+        )
+        self._update_status_label.pack(anchor="w", pady=(0, 10))
+
+        btn_row = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
+        btn_row.pack(fill="x")
+
+        self._check_update_btn = ModernButton(
+            btn_row,
+            text="🔍  " + t("check_for_updates"),
+            command=lambda: self._check_for_updates(settings_win),
+            primary=False,
+            width=180
+        )
+        self._check_update_btn.pack(side="left")
+
+        # Startup check option
+        startup_var = tk.BooleanVar(value=self._config.check_updates_on_startup)
+
+        def save_startup():
+            self._config.check_updates_on_startup = startup_var.get()
+            self._config_manager.save(self._config)
+
+        ModernCheckbox(
+            parent,
+            text=t("check_on_startup"),
+            variable=startup_var,
+            command=save_startup
+        ).pack(anchor="w", pady=(10, 0))
+
+    def _create_about_section(self, parent) -> None:
+        """Create about section."""
+        tk.Label(
+            parent,
+            text=f"EPLAN eVIEW Extractor v{VERSION}\n"
+                 f"{t('about_description')}\n"
+                 f"© 2024 {t('copyright')}",
+            bg=Theme.get_color("BG_CARD"),
+            fg=Theme.get_color("TEXT_MUTED"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
+            justify="left"
+        ).pack(anchor="w")
+
     def _apply_theme(self, is_dark: bool, settings_win: tk.Toplevel) -> None:
         """Apply theme change."""
         Theme.set_dark_mode(is_dark)
+        self._config.dark_mode = is_dark
+        self._config_manager.save(self._config)
         self._theme_btn.config(text="🌙" if is_dark else "☀")
 
-        # Show restart message
         messagebox.showinfo(
-            "Theme Changed",
-            f"Theme changed to {'Dark' if is_dark else 'Light'} mode.\n\n"
-            "Please restart the application for the change to take full effect.",
+            t("appearance"),
+            t("theme_restart_note"),
             parent=settings_win
         )
 
     def _clear_cache_action(self, parent_window: tk.Toplevel) -> None:
-        """Clear cache and show confirmation."""
+        """Clear cache."""
         count = self._cache_manager.clear()
-        self._log_panel.log(f"Cleared {count} cache entries", "SUCCESS")
+        self._log_panel.log(t("cache_cleared_msg", count=count), "SUCCESS")
         messagebox.showinfo(
-            "Cache Cleared",
-            f"Successfully cleared {count} cache entries.",
+            t("cache_cleared"),
+            t("cache_cleared_msg", count=count),
             parent=parent_window
         )
 
     def _clear_credentials_action(self, parent_window: tk.Toplevel) -> None:
         """Clear saved credentials."""
         self._password_var.set("")
-        config = AppConfig(
-            email=self._username_var.get(),
-            password_encrypted="",
-            project=self._project_var.get(),
-            headless=self._headless_var.get(),
-            export_excel=self._export_excel_var.get(),
-            export_csv=self._export_csv_var.get()
-        )
-        self._config_manager.save(config)
-        self._log_panel.log("Cleared saved credentials", "SUCCESS")
+        self._config.password_encrypted = ""
+        self._config_manager.save(self._config)
+        self._log_panel.log(t("credentials_cleared_msg"), "SUCCESS")
         messagebox.showinfo(
-            "Credentials Cleared",
-            "Saved credentials have been removed.",
+            t("credentials_cleared"),
+            t("credentials_cleared_msg"),
             parent=parent_window
         )
 
     def _check_for_updates(self, parent_window: tk.Toplevel) -> None:
-        """Check for updates from GitHub releases."""
-        # Update UI
+        """Check for updates."""
         self._check_update_btn.set_enabled(False)
         self._update_status_label.config(
-            text="Checking for updates...",
+            text=t("checking_updates"),
             fg=Theme.get_color("TEXT_MUTED")
         )
-        self._logger.info("Checking for updates...")
 
-        # Create checker and start async check
         checker = UpdateChecker()
         checker.check_for_updates_async(
             lambda release, error: self.root.after(
@@ -723,88 +1075,59 @@ class EPlanExtractorGUI:
 
         if error:
             self._update_status_label.config(
-                text=f"Error checking for updates: {str(error)[:40]}",
+                text=t("update_check_failed"),
                 fg=Theme.get_color("ACCENT_ERROR")
             )
-            self._logger.error(f"Update check failed: {error}")
             return
 
         if release is None:
             self._update_status_label.config(
-                text="You're running the latest version!",
+                text=t("up_to_date"),
                 fg=Theme.get_color("ACCENT_SUCCESS")
             )
-            self._logger.info("Application is up to date")
             return
 
-        # Update available
         self._update_status_label.config(
-            text=f"Update available: v{release.version}",
+            text=t("update_available", version=release.version),
             fg=Theme.get_color("ACCENT_WARNING")
         )
-        self._logger.info(f"Update available: v{release.version}")
-
-        # Show update dialog
         self._show_update_dialog(release, parent_window)
 
-    def _show_update_dialog(
-        self,
-        release: ReleaseInfo,
-        parent_window: tk.Toplevel
-    ) -> None:
-        """Show dialog for available update."""
+    def _show_update_dialog(self, release: ReleaseInfo, parent_window: tk.Toplevel) -> None:
+        """Show update dialog."""
         dialog = tk.Toplevel(parent_window)
-        dialog.title("Update Available")
+        dialog.title(t("update_available_title"))
         dialog.geometry("450x400")
         dialog.configure(bg=Theme.get_color("BG_PRIMARY"))
         dialog.transient(parent_window)
         dialog.grab_set()
 
-        # Center on parent
-        dialog.geometry(f"+{parent_window.winfo_x() + 50}+{parent_window.winfo_y() + 50}")
-
-        # Header
-        header_frame = tk.Frame(dialog, bg=Theme.get_color("BG_PRIMARY"))
-        header_frame.pack(fill="x", padx=20, pady=(20, 10))
-
         tk.Label(
-            header_frame,
-            text="🎉  Update Available!",
+            dialog,
+            text="🎉  " + t("update_available_header"),
             bg=Theme.get_color("BG_PRIMARY"),
             fg=Theme.get_color("ACCENT_SUCCESS"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING + 2, "bold")
-        ).pack(anchor="w")
+        ).pack(pady=(20, 10))
 
-        # Version info
-        version_frame = tk.Frame(dialog, bg=Theme.get_color("BG_CARD"))
-        version_frame.pack(fill="x", padx=20, pady=10)
+        info_frame = tk.Frame(dialog, bg=Theme.get_color("BG_CARD"))
+        info_frame.pack(fill="x", padx=20, pady=10)
 
         tk.Label(
-            version_frame,
-            text=f"New version: v{release.version}",
+            info_frame,
+            text=t("new_version", version=release.version),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
         ).pack(anchor="w", padx=15, pady=(15, 5))
 
         tk.Label(
-            version_frame,
-            text=f"Current version: v{VERSION}",
+            info_frame,
+            text=t("current_version", version=VERSION),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_MUTED"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", padx=15)
-
-        if release.download_size > 0:
-            tk.Label(
-                version_frame,
-                text=f"Download size: {format_size(release.download_size)}",
-                bg=Theme.get_color("BG_CARD"),
-                fg=Theme.get_color("TEXT_MUTED"),
-                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-            ).pack(anchor="w", padx=15, pady=(5, 15))
-        else:
-            tk.Label(version_frame, text="", bg=Theme.get_color("BG_CARD")).pack(pady=(0, 10))
+        ).pack(anchor="w", padx=15, pady=(0, 15))
 
         # Release notes
         notes_frame = tk.Frame(dialog, bg=Theme.get_color("BG_CARD"))
@@ -812,13 +1135,12 @@ class EPlanExtractorGUI:
 
         tk.Label(
             notes_frame,
-            text="Release Notes:",
+            text=t("release_notes"),
             bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL, "bold")
         ).pack(anchor="w", padx=15, pady=(10, 5))
 
-        # Scrollable text for release notes
         notes_text = tk.Text(
             notes_frame,
             wrap="word",
@@ -826,68 +1148,58 @@ class EPlanExtractorGUI:
             bg=Theme.get_color("BG_INPUT"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
-            relief="flat",
-            padx=10,
-            pady=10
+            relief="flat"
         )
         notes_text.pack(fill="both", expand=True, padx=15, pady=(0, 15))
-        notes_text.insert("1.0", release.body or "No release notes available.")
+        notes_text.insert("1.0", release.body or t("no_release_notes"))
         notes_text.config(state="disabled")
 
         # Buttons
         btn_frame = tk.Frame(dialog, bg=Theme.get_color("BG_PRIMARY"))
         btn_frame.pack(fill="x", padx=20, pady=15)
 
-        # Download/Open button
         if release.download_url:
             ModernButton(
                 btn_frame,
-                text="⬇  Download Update",
+                text="⬇  " + t("download_update"),
                 command=lambda: self._download_update(release, dialog),
                 primary=True,
-                width=150,
-                tooltip="Download the update file"
+                width=150
             ).pack(side="left", padx=(0, 10))
 
         ModernButton(
             btn_frame,
-            text="🌐  View on GitHub",
+            text="🌐  " + t("view_on_github"),
             command=lambda: UpdateDownloader.open_release_page(release.html_url),
             primary=False,
-            width=140,
-            tooltip="Open release page in browser"
-        ).pack(side="left", padx=(0, 10))
+            width=140
+        ).pack(side="left")
 
         ModernButton(
             btn_frame,
-            text="Later",
+            text=t("later"),
             command=dialog.destroy,
             primary=False,
             width=80
         ).pack(side="right")
 
     def _download_update(self, release: ReleaseInfo, dialog: tk.Toplevel) -> None:
-        """Download update and offer to install."""
-        # Create progress dialog
+        """Download update with progress."""
         progress_dialog = tk.Toplevel(dialog)
-        progress_dialog.title("Downloading Update")
+        progress_dialog.title(t("downloading_update"))
         progress_dialog.geometry("350x150")
         progress_dialog.configure(bg=Theme.get_color("BG_PRIMARY"))
         progress_dialog.transient(dialog)
         progress_dialog.grab_set()
 
-        # Center on parent
-        progress_dialog.geometry(f"+{dialog.winfo_x() + 50}+{dialog.winfo_y() + 100}")
-
         tk.Label(
             progress_dialog,
-            text="Downloading update...",
+            text=t("downloading_update"),
             bg=Theme.get_color("BG_PRIMARY"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
         ).pack(pady=(20, 10))
 
-        # Progress label
         progress_label = tk.Label(
             progress_dialog,
             text="0%",
@@ -897,7 +1209,6 @@ class EPlanExtractorGUI:
         )
         progress_label.pack(pady=5)
 
-        # Progress bar (simple canvas-based)
         progress_canvas = tk.Canvas(
             progress_dialog,
             width=300,
@@ -912,82 +1223,262 @@ class EPlanExtractorGUI:
             outline=""
         )
 
-        # Cancel button
         cancel_pressed = [False]
+        downloader = UpdateDownloader(release)
 
-        def cancel_download():
+        def cancel():
             cancel_pressed[0] = True
             downloader.cancel()
             progress_dialog.destroy()
 
         ModernButton(
             progress_dialog,
-            text="Cancel",
-            command=cancel_download,
+            text=t("cancel"),
+            command=cancel,
             primary=False,
             width=80
         ).pack(pady=10)
 
-        # Progress callback
         def update_progress(downloaded: int, total: int):
             if total > 0:
                 percent = int((downloaded / total) * 100)
                 bar_width = int((downloaded / total) * 300)
                 self.root.after(0, lambda: [
-                    progress_label.config(
-                        text=f"{percent}% ({format_size(downloaded)} / {format_size(total)})"
-                    ),
+                    progress_label.config(text=f"{percent}%"),
                     progress_canvas.coords(progress_bar, 0, 0, bar_width, 20)
                 ])
 
-        # Completion callback
-        def on_download_complete(file_path, error):
+        def on_complete(file_path, error):
             if cancel_pressed[0]:
                 return
-
             self.root.after(0, progress_dialog.destroy)
-
             if error:
                 self.root.after(0, lambda: messagebox.showerror(
-                    "Download Failed",
-                    f"Failed to download update:\n{str(error)}",
-                    parent=dialog
+                    t("download_failed"), str(error), parent=dialog
                 ))
-                return
-
-            if file_path:
+            elif file_path:
                 self.root.after(0, lambda: self._offer_install(file_path, release, dialog))
 
-        # Start download
-        downloader = UpdateDownloader(release)
         downloader.set_progress_callback(update_progress)
-        downloader.download_async(on_download_complete)
+        downloader.download_async(on_complete)
 
     def _offer_install(self, file_path, release: ReleaseInfo, dialog: tk.Toplevel) -> None:
-        """Offer to install downloaded update."""
-        result = messagebox.askyesno(
-            "Download Complete",
-            f"Update v{release.version} downloaded successfully!\n\n"
-            f"File: {file_path}\n\n"
-            "Would you like to open the installer now?\n"
-            "(The application will close)",
+        """Offer to install update."""
+        if messagebox.askyesno(
+            t("download_complete"),
+            t("download_complete_msg", version=release.version, file=file_path),
             parent=dialog
-        )
-
-        if result:
+        ):
             if UpdateDownloader.install_update(file_path):
-                self._logger.info("Starting update installer...")
                 dialog.destroy()
                 self.root.quit()
             else:
                 messagebox.showinfo(
-                    "Manual Installation Required",
-                    f"Please manually run the installer:\n\n{file_path}",
+                    t("manual_install_required"),
+                    t("manual_install_msg", file=file_path),
                     parent=dialog
                 )
 
+    def _show_history(self) -> None:
+        """Show extraction history dialog."""
+        history = self._config_manager.get_history()
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(t("history_title"))
+        dialog.geometry("700x500")
+        dialog.configure(bg=Theme.get_color("BG_PRIMARY"))
+        dialog.transient(self.root)
+
+        tk.Label(
+            dialog,
+            text="📋  " + t("extraction_history"),
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE - 4, "bold")
+        ).pack(pady=(20, 10))
+
+        if not history:
+            tk.Label(
+                dialog,
+                text=t("no_history"),
+                bg=Theme.get_color("BG_PRIMARY"),
+                fg=Theme.get_color("TEXT_MUTED"),
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+            ).pack(expand=True)
+        else:
+            # Create treeview
+            columns = ("date", "project", "duration", "variables", "status")
+            tree = ttk.Treeview(dialog, columns=columns, show="headings", height=15)
+
+            tree.heading("date", text=t("date_col"))
+            tree.heading("project", text=t("project_col"))
+            tree.heading("duration", text=t("duration_col"))
+            tree.heading("variables", text=t("variables_col"))
+            tree.heading("status", text=t("status_col"))
+
+            tree.column("date", width=150)
+            tree.column("project", width=200)
+            tree.column("duration", width=100)
+            tree.column("variables", width=100)
+            tree.column("status", width=100)
+
+            for record in history:
+                date = record.timestamp[:19].replace("T", " ") if record.timestamp else ""
+                duration = f"{record.duration_seconds:.1f}s"
+                status = t("success") if record.success else t("failed")
+                tree.insert("", "end", values=(
+                    date, record.project, duration, record.variables_found, status
+                ))
+
+            tree.pack(fill="both", expand=True, padx=20, pady=10)
+
+        btn_frame = tk.Frame(dialog, bg=Theme.get_color("BG_PRIMARY"))
+        btn_frame.pack(fill="x", padx=20, pady=15)
+
+        ModernButton(
+            btn_frame,
+            text="🗑  " + t("clear_history"),
+            command=lambda: self._clear_history(dialog),
+            primary=False,
+            width=140
+        ).pack(side="left")
+
+        ModernButton(
+            btn_frame,
+            text=t("close"),
+            command=dialog.destroy,
+            primary=True,
+            width=100
+        ).pack(side="right")
+
+    def _clear_history(self, dialog: tk.Toplevel) -> None:
+        """Clear extraction history."""
+        count = self._config_manager.clear_history()
+        messagebox.showinfo(
+            t("history_cleared"),
+            t("history_cleared_msg", count=count),
+            parent=dialog
+        )
+        dialog.destroy()
+        self._show_history()
+
+    def _show_statistics(self) -> None:
+        """Show statistics dialog."""
+        stats = self._config_manager.get_statistics()
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(t("statistics_title"))
+        dialog.geometry("400x400")
+        dialog.configure(bg=Theme.get_color("BG_PRIMARY"))
+        dialog.transient(self.root)
+
+        tk.Label(
+            dialog,
+            text="📊  " + t("statistics"),
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE - 4, "bold")
+        ).pack(pady=(20, 20))
+
+        stats_frame = tk.Frame(dialog, bg=Theme.get_color("BG_CARD"))
+        stats_frame.pack(fill="x", padx=20, pady=10)
+
+        stat_items = [
+            (t("total_extractions"), stats["total_extractions"]),
+            (t("successful_extractions"), stats["successful_extractions"]),
+            (t("failed_extractions"), stats["failed_extractions"]),
+            (t("total_pages"), stats["total_pages"]),
+            (t("total_variables"), stats["total_variables"]),
+            (t("unique_projects"), stats["unique_projects"]),
+            (t("total_time"), f"{stats['total_time_seconds'] / 60:.1f} min"),
+            (t("average_time"), f"{stats['average_time_seconds']:.1f}s"),
+        ]
+
+        for label, value in stat_items:
+            row = tk.Frame(stats_frame, bg=Theme.get_color("BG_CARD"))
+            row.pack(fill="x", padx=15, pady=5)
+
+            tk.Label(
+                row,
+                text=label,
+                bg=Theme.get_color("BG_CARD"),
+                fg=Theme.get_color("TEXT_SECONDARY"),
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+            ).pack(side="left")
+
+            tk.Label(
+                row,
+                text=str(value),
+                bg=Theme.get_color("BG_CARD"),
+                fg=Theme.get_color("TEXT_PRIMARY"),
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold")
+            ).pack(side="right")
+
+        ModernButton(
+            dialog,
+            text=t("close"),
+            command=dialog.destroy,
+            primary=True,
+            width=100
+        ).pack(pady=20)
+
+    def _show_shortcuts_help(self) -> None:
+        """Show keyboard shortcuts help."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(t("keyboard_shortcuts"))
+        dialog.geometry("350x250")
+        dialog.configure(bg=Theme.get_color("BG_PRIMARY"))
+        dialog.transient(self.root)
+
+        tk.Label(
+            dialog,
+            text="⌨  " + t("keyboard_shortcuts"),
+            bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING, "bold")
+        ).pack(pady=(20, 20))
+
+        shortcuts = [
+            ("Ctrl+Enter", t("shortcut_start")),
+            ("Escape", t("shortcut_stop")),
+            ("Ctrl+,", t("shortcut_settings")),
+            ("Ctrl+H", t("extraction_history")),
+            ("Ctrl+Q", t("shortcut_quit")),
+            ("F1", t("keyboard_shortcuts")),
+        ]
+
+        for key, desc in shortcuts:
+            row = tk.Frame(dialog, bg=Theme.get_color("BG_PRIMARY"))
+            row.pack(fill="x", padx=30, pady=3)
+
+            tk.Label(
+                row,
+                text=key,
+                bg=Theme.get_color("BG_PRIMARY"),
+                fg=Theme.get_color("ACCENT_PRIMARY"),
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY, "bold"),
+                width=12,
+                anchor="w"
+            ).pack(side="left")
+
+            tk.Label(
+                row,
+                text=desc,
+                bg=Theme.get_color("BG_PRIMARY"),
+                fg=Theme.get_color("TEXT_SECONDARY"),
+                font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+            ).pack(side="left")
+
+        ModernButton(
+            dialog,
+            text=t("close"),
+            command=dialog.destroy,
+            primary=True,
+            width=80
+        ).pack(pady=20)
+
     def _log_callback(self, message: str, level: str) -> None:
-        """Callback for logger to update GUI log."""
+        """Callback for logger."""
         try:
             self._log_panel.log(message, level)
             self.root.update_idletasks()
@@ -996,17 +1487,20 @@ class EPlanExtractorGUI:
 
     def _load_config(self) -> None:
         """Load saved configuration."""
-        config = self._config_manager.load()
+        self._username_var.set(self._config.email)
+        self._project_var.set(self._config.project)
+        self._headless_var.set(self._config.headless)
+        self._export_excel_var.set(self._config.export_excel)
+        self._export_csv_var.set(self._config.export_csv)
+        self._export_json_var.set(self._config.export_json)
+        self._output_dir_var.set(self._config.export_directory)
 
-        self._username_var.set(config.email)
-        self._project_var.set(config.project)
-        self._headless_var.set(config.headless)
-        self._export_excel_var.set(config.export_excel)
-        self._export_csv_var.set(config.export_csv)
-
-        if config.password_encrypted:
-            password = self._config_manager.decrypt_password(config.password_encrypted)
+        if self._config.password_encrypted:
+            password = self._config_manager.decrypt_password(self._config.password_encrypted)
             self._password_var.set(password)
+
+        # Apply theme
+        Theme.set_dark_mode(self._config.dark_mode)
 
     def _save_config(self) -> None:
         """Save current configuration."""
@@ -1016,15 +1510,16 @@ class EPlanExtractorGUI:
                 self._password_var.get()
             )
 
-        config = AppConfig(
-            email=self._username_var.get(),
-            password_encrypted=password_encrypted,
-            project=self._project_var.get(),
-            headless=self._headless_var.get(),
-            export_excel=self._export_excel_var.get(),
-            export_csv=self._export_csv_var.get()
-        )
-        self._config_manager.save(config)
+        self._config.email = self._username_var.get()
+        self._config.password_encrypted = password_encrypted
+        self._config.project = self._project_var.get()
+        self._config.headless = self._headless_var.get()
+        self._config.export_excel = self._export_excel_var.get()
+        self._config.export_csv = self._export_csv_var.get()
+        self._config.export_json = self._export_json_var.get()
+        self._config.export_directory = self._output_dir_var.get()
+
+        self._config_manager.save(self._config)
 
     def _validate_inputs(self) -> bool:
         """Validate user inputs."""
@@ -1033,27 +1528,21 @@ class EPlanExtractorGUI:
         project = self._project_var.get()
 
         if not email:
-            self._show_error("Please enter your email address")
-            self._email_entry.set_validation_state(False)
+            self._show_error(t("validation_email_required"))
             return False
 
         if not validate_email(email):
-            self._show_error("Please enter a valid email address")
-            self._email_entry.set_validation_state(False)
+            self._show_error(t("validation_email_invalid"))
             return False
 
-        self._email_entry.set_validation_state(True)
-
         if not password:
-            self._show_error("Please enter your password")
+            self._show_error(t("validation_password_required"))
             return False
 
         if not project:
-            self._show_error("Please enter a project number")
-            self._project_entry.set_validation_state(False)
+            self._show_error(t("validation_project_required"))
             return False
 
-        self._project_entry.set_validation_state(True)
         return True
 
     def _show_error(self, message: str) -> None:
@@ -1062,7 +1551,7 @@ class EPlanExtractorGUI:
         self._log_panel.log(message, "ERROR")
 
     def _start_extraction(self) -> None:
-        """Start the extraction process."""
+        """Start extraction."""
         if self._is_running:
             return
 
@@ -1070,36 +1559,43 @@ class EPlanExtractorGUI:
             return
 
         self._save_config()
+        self._config_manager.add_recent_project(self._project_var.get())
 
-        # Update UI state
         self._is_running = True
+        self._extraction_start_time = time.time()
         self._start_button.set_enabled(False)
         self._stop_button.set_enabled(True)
         self._progress_indicator.reset()
-        self._status_bar.set_status("Starting extraction...", "running")
+        self._status_bar.set_status(t("status_starting"), "running")
+        self._tray.set_running_state(True)
 
-        # Start extraction thread
         thread = threading.Thread(target=self._run_extraction, daemon=True)
         thread.start()
 
     def _stop_extraction(self) -> None:
-        """Stop the extraction process."""
+        """Stop extraction."""
         self._is_running = False
-        self._status_bar.set_status("Stopping...", "running")
+        self._status_bar.set_status(t("status_stopped"), "idle")
 
         if self._extractor:
             self._extractor.request_stop()
 
         self._start_button.set_enabled(True)
         self._stop_button.set_enabled(False)
-        self._status_bar.set_status("Extraction stopped", "idle")
+        self._tray.set_running_state(False)
 
     def _update_progress(self, step: int, progress: float = 0.0) -> None:
-        """Update progress indicator (thread-safe)."""
+        """Update progress (thread-safe)."""
         self.root.after(0, lambda: self._progress_indicator.set_step(step, progress))
 
     def _run_extraction(self) -> None:
-        """Run the extraction in a background thread."""
+        """Run extraction in background thread."""
+        pages_extracted = 0
+        variables_found = 0
+        output_file = ""
+        success = False
+        error_message = ""
+
         try:
             self._logger.info("=" * 40)
             self._logger.info("Starting EPLAN eVIEW extraction")
@@ -1117,7 +1613,7 @@ class EPlanExtractorGUI:
 
             # Step 0: Login
             self._update_progress(0, 0.0)
-            self.root.after(0, lambda: self._status_bar.set_status("Logging in...", "running"))
+            self.root.after(0, lambda: self._status_bar.set_status(t("status_logging_in"), "running"))
 
             self._extractor.setup_driver()
             self._update_progress(0, 0.3)
@@ -1135,7 +1631,7 @@ class EPlanExtractorGUI:
 
             # Step 1: Open Project
             self._update_progress(1, 0.0)
-            self.root.after(0, lambda: self._status_bar.set_status("Opening project...", "running"))
+            self.root.after(0, lambda: self._status_bar.set_status(t("status_opening_project"), "running"))
 
             if not self._extractor.open_project():
                 raise Exception("Failed to open project")
@@ -1150,7 +1646,7 @@ class EPlanExtractorGUI:
 
             # Step 2: Extract
             self._update_progress(2, 0.0)
-            self.root.after(0, lambda: self._status_bar.set_status("Extracting variables...", "running"))
+            self.root.after(0, lambda: self._status_bar.set_status(t("status_extracting"), "running"))
 
             if not self._extractor.extract_variables():
                 raise Exception("Extraction failed")
@@ -1162,22 +1658,49 @@ class EPlanExtractorGUI:
             # Step 3: Export
             self._update_progress(3, 1.0)
 
-            # Success
+            # Get stats
+            pages_extracted = getattr(self._extractor, '_pages_processed', 0)
+            variables_found = getattr(self._extractor, '_variables_found', 0)
             output_file = f"{self._project_var.get()} IO-List.xlsx"
-            self._logger.success("Extraction completed successfully!")
-            self.root.after(0, lambda: self._status_bar.set_status("Extraction completed!", "success"))
+            success = True
+
+            self._logger.success(t("status_completed"))
+            self.root.after(0, lambda: self._status_bar.set_status(t("status_completed"), "success"))
             self.root.after(0, lambda: messagebox.showinfo(
-                "Success",
-                f"Extraction completed!\n\nOutput: {output_file}"
+                t("success"),
+                f"{t('status_completed')}\n\nOutput: {output_file}"
             ))
 
+            # Notification
+            NotificationManager.notify_extraction_complete(
+                self._project_var.get(),
+                variables_found,
+                output_file
+            )
+
         except Exception as e:
+            error_message = str(e)
             self._logger.error(f"Extraction error: {e}")
-            self.root.after(0, lambda: self._status_bar.set_status(f"Error: {str(e)[:50]}", "error"))
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Extraction failed:\n{str(e)}"))
+            self.root.after(0, lambda: self._status_bar.set_status(f"{t('status_error')}: {str(e)[:50]}", "error"))
+            self.root.after(0, lambda: messagebox.showerror(t("status_error"), str(e)))
+            NotificationManager.notify_extraction_failed(self._project_var.get(), error_message)
 
         finally:
+            # Save history
+            record = ExtractionRecord(
+                project=self._project_var.get(),
+                timestamp=datetime.now().isoformat(),
+                duration_seconds=time.time() - self._extraction_start_time,
+                pages_extracted=pages_extracted,
+                variables_found=variables_found,
+                output_file=output_file,
+                success=success,
+                error_message=error_message
+            )
+            self._config_manager.add_history_entry(record)
+
             self._is_running = False
             self._extractor = None
             self.root.after(0, lambda: self._start_button.set_enabled(True))
             self.root.after(0, lambda: self._stop_button.set_enabled(False))
+            self.root.after(0, lambda: self._tray.set_running_state(False))
