@@ -1,5 +1,5 @@
 """
-EPLAN eVIEW Text Extractor - Clean Professional GUI
+EPLAN eVIEW Text Extractor - Responsive Professional GUI
 """
 
 from __future__ import annotations
@@ -32,13 +32,15 @@ def validate_email(email: str) -> bool:
 
 
 class EPlanExtractorGUI:
-    """Clean, professional GUI for EPLAN eVIEW extraction."""
+    """Responsive, professional GUI for EPLAN eVIEW extraction."""
+
+    MAX_CONTENT_WIDTH = 800  # Maximum width for content area
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("EPLAN eVIEW Extractor")
-        self.root.geometry("560x680")
-        self.root.minsize(480, 600)
+        self.root.geometry("600x700")
+        self.root.minsize(480, 550)
         self.root.configure(bg=Theme.get_color("BG_PRIMARY"))
 
         self._logger = get_logger()
@@ -81,7 +83,6 @@ class EPlanExtractorGUI:
         Theme.add_observer(self._on_theme_change)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # Startup update check
         if self._config.check_updates_on_startup:
             self.root.after(2000, self._check_updates_silent)
 
@@ -92,27 +93,29 @@ class EPlanExtractorGUI:
         self.root.bind("<Control-q>", lambda e: self._quit_app())
 
     def _setup_ui(self) -> None:
-        main = tk.Frame(self.root, bg=Theme.get_color("BG_PRIMARY"))
-        main.pack(fill="both", expand=True)
+        # Main container that fills window
+        self._main = tk.Frame(self.root, bg=Theme.get_color("BG_PRIMARY"))
+        self._main.pack(fill="both", expand=True)
 
-        self._create_header(main)
+        # Configure grid weights for proper scaling
+        self._main.grid_rowconfigure(0, weight=0)  # Header
+        self._main.grid_rowconfigure(1, weight=1)  # Content (expands)
+        self._main.grid_rowconfigure(2, weight=0)  # Status bar
+        self._main.grid_columnconfigure(0, weight=1)
 
-        content = tk.Frame(main, bg=Theme.get_color("BG_PRIMARY"))
-        content.pack(fill="both", expand=True, padx=24, pady=16)
+        # Header
+        self._create_header()
 
-        self._create_form(content)
-        self._create_progress(content)
-        self._create_buttons(content)
+        # Scrollable content area
+        self._create_content_area()
 
-        self._log_panel = LogPanel(content)
-        self._log_panel.pack(fill="both", expand=True, pady=(16, 0))
+        # Status bar
+        self._status_bar = StatusBar(self._main)
+        self._status_bar.grid(row=2, column=0, sticky="ew")
 
-        self._status_bar = StatusBar(main)
-        self._status_bar.pack(fill="x", side="bottom")
-
-    def _create_header(self, parent: tk.Widget) -> None:
-        header = tk.Frame(parent, bg=Theme.get_color("BG_PRIMARY"))
-        header.pack(fill="x", padx=24, pady=(20, 8))
+    def _create_header(self) -> None:
+        header = tk.Frame(self._main, bg=Theme.get_color("BG_PRIMARY"))
+        header.grid(row=0, column=0, sticky="ew", padx=32, pady=(24, 16))
 
         tk.Label(
             header, text="EPLAN eVIEW Extractor",
@@ -125,7 +128,7 @@ class EPlanExtractorGUI:
             header, text="Settings",
             bg=Theme.get_color("BG_PRIMARY"),
             fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY),
             cursor="hand2"
         )
         settings_btn.pack(side="right")
@@ -133,12 +136,39 @@ class EPlanExtractorGUI:
         settings_btn.bind("<Enter>", lambda e: settings_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
         settings_btn.bind("<Leave>", lambda e: settings_btn.config(fg=Theme.get_color("TEXT_MUTED")))
 
-    def _create_form(self, parent: tk.Widget) -> None:
-        card = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
+    def _create_content_area(self) -> None:
+        # Container for centering content
+        container = tk.Frame(self._main, bg=Theme.get_color("BG_PRIMARY"))
+        container.grid(row=1, column=0, sticky="nsew")
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_columnconfigure(1, weight=0, minsize=0)
+        container.grid_columnconfigure(2, weight=1)
+        container.grid_rowconfigure(0, weight=1)
+
+        # Center column with max width
+        self._content = tk.Frame(container, bg=Theme.get_color("BG_PRIMARY"))
+        self._content.grid(row=0, column=1, sticky="ns", padx=32)
+
+        # Bind resize to limit width
+        container.bind("<Configure>", self._on_resize)
+
+        # Content sections
+        self._create_form()
+        self._create_progress()
+        self._create_buttons()
+        self._create_log()
+
+    def _on_resize(self, event) -> None:
+        """Limit content width on resize."""
+        width = min(event.width - 64, self.MAX_CONTENT_WIDTH)
+        self._content.config(width=width)
+
+    def _create_form(self) -> None:
+        card = tk.Frame(self._content, bg=Theme.get_color("BG_CARD"))
         card.pack(fill="x", pady=(0, 16))
 
         inner = tk.Frame(card, bg=Theme.get_color("BG_CARD"))
-        inner.pack(fill="x", padx=20, pady=20)
+        inner.pack(fill="x", padx=24, pady=24)
 
         # Email
         self._create_field(inner, "Email", self._email_var, "email@company.com", validate_email)
@@ -147,8 +177,8 @@ class EPlanExtractorGUI:
         tk.Label(
             inner, text="Password", bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_SECONDARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(12, 4))
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+        ).pack(anchor="w", pady=(16, 6))
 
         self._password_entry = PasswordEntry(inner, textvariable=self._password_var)
         self._password_entry.pack(fill="x")
@@ -157,8 +187,8 @@ class EPlanExtractorGUI:
         tk.Label(
             inner, text="Project Number", bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_SECONDARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(12, 4))
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+        ).pack(anchor="w", pady=(16, 6))
 
         project_frame = tk.Frame(inner, bg=Theme.get_color("BG_CARD"))
         project_frame.pack(fill="x")
@@ -178,112 +208,150 @@ class EPlanExtractorGUI:
                 font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL),
                 cursor="hand2"
             )
-            recent_btn.pack(side="right", padx=(8, 0))
+            recent_btn.pack(side="right", padx=(12, 0))
             recent_btn.bind("<Button-1>", self._show_recent)
+            recent_btn.bind("<Enter>", lambda e: recent_btn.config(fg=Theme.get_color("TEXT_PRIMARY")))
+            recent_btn.bind("<Leave>", lambda e: recent_btn.config(fg=Theme.get_color("TEXT_MUTED")))
 
-        # Options
+        # Options row
         opts = tk.Frame(inner, bg=Theme.get_color("BG_CARD"))
-        opts.pack(fill="x", pady=(16, 0))
+        opts.pack(fill="x", pady=(20, 0))
 
         ModernCheckbox(opts, text="Excel", variable=self._export_excel_var).pack(side="left")
-        ModernCheckbox(opts, text="CSV", variable=self._export_csv_var).pack(side="left", padx=(16, 0))
-        tk.Frame(opts, bg=Theme.get_color("BG_CARD"), width=32).pack(side="left")
-        ModernCheckbox(opts, text="Background", variable=self._headless_var).pack(side="left")
+        ModernCheckbox(opts, text="CSV", variable=self._export_csv_var).pack(side="left", padx=(20, 0))
+        tk.Frame(opts, bg=Theme.get_color("BG_CARD"), width=40).pack(side="left")
+        ModernCheckbox(opts, text="Background mode", variable=self._headless_var).pack(side="left")
 
     def _create_field(self, parent, label, var, placeholder="", validate=None) -> None:
         tk.Label(
             parent, text=label, bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_SECONDARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(0, 4))
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+        ).pack(anchor="w", pady=(0, 6))
 
         ModernEntry(
             parent, placeholder=placeholder,
             textvariable=var, validate_func=validate
         ).pack(fill="x")
 
-    def _create_progress(self, parent: tk.Widget) -> None:
-        card = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
+    def _create_progress(self) -> None:
+        card = tk.Frame(self._content, bg=Theme.get_color("BG_CARD"))
         card.pack(fill="x", pady=(0, 16))
 
         self._progress = ProgressIndicator(card)
-        self._progress.pack(fill="x", padx=16, pady=16)
+        self._progress.pack(fill="x", padx=20, pady=20)
 
-    def _create_buttons(self, parent: tk.Widget) -> None:
-        frame = tk.Frame(parent, bg=Theme.get_color("BG_PRIMARY"))
-        frame.pack(fill="x")
+    def _create_buttons(self) -> None:
+        frame = tk.Frame(self._content, bg=Theme.get_color("BG_PRIMARY"))
+        frame.pack(fill="x", pady=(0, 16))
 
+        # Center buttons
         center = tk.Frame(frame, bg=Theme.get_color("BG_PRIMARY"))
         center.pack()
 
         self._start_btn = ModernButton(
             center, text="Start Extraction",
-            command=self._start_extraction, primary=True, width=140
+            command=self._start_extraction, primary=True, width=160, height=40
         )
-        self._start_btn.pack(side="left", padx=(0, 8))
+        self._start_btn.pack(side="left", padx=(0, 12))
 
         self._stop_btn = ModernButton(
             center, text="Stop",
-            command=self._stop_extraction, primary=False, width=80
+            command=self._stop_extraction, primary=False, width=100, height=40
         )
         self._stop_btn.pack(side="left")
         self._stop_btn.set_enabled(False)
+
+    def _create_log(self) -> None:
+        self._log_panel = LogPanel(self._content)
+        self._log_panel.pack(fill="both", expand=True)
 
     def _show_recent(self, event: tk.Event) -> None:
         recent = self._config_manager.get_recent_projects()
         if not recent:
             return
-        menu = tk.Menu(self.root, tearoff=0)
+        menu = tk.Menu(self.root, tearoff=0, bg=Theme.get_color("BG_CARD"),
+                      fg=Theme.get_color("TEXT_PRIMARY"))
         for p in recent[:8]:
             menu.add_command(label=p, command=lambda x=p: self._project_var.set(x))
         menu.post(event.x_root, event.y_root)
 
     def _show_settings(self) -> None:
+        # Scale settings window based on main window
+        w = min(500, self.root.winfo_width() - 100)
+        h = min(550, self.root.winfo_height() - 100)
+
         win = tk.Toplevel(self.root)
         win.title("Settings")
-        win.geometry("400x480")
+        win.geometry(f"{w}x{h}")
+        win.minsize(350, 400)
         win.configure(bg=Theme.get_color("BG_PRIMARY"))
         win.transient(self.root)
         win.grab_set()
 
-        canvas = tk.Canvas(win, bg=Theme.get_color("BG_PRIMARY"), highlightthickness=0)
-        scrollbar = ttk.Scrollbar(win, orient="vertical", command=canvas.yview)
+        # Center on parent
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        win.geometry(f"+{x}+{y}")
+
+        # Main frame
+        main = tk.Frame(win, bg=Theme.get_color("BG_PRIMARY"))
+        main.pack(fill="both", expand=True)
+
+        # Header
+        tk.Label(
+            main, text="Settings", bg=Theme.get_color("BG_PRIMARY"),
+            fg=Theme.get_color("TEXT_PRIMARY"),
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE, "bold")
+        ).pack(anchor="w", padx=24, pady=(24, 20))
+
+        # Scrollable content
+        canvas = tk.Canvas(main, bg=Theme.get_color("BG_PRIMARY"), highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main, orient="vertical", command=canvas.yview)
         content = tk.Frame(canvas, bg=Theme.get_color("BG_PRIMARY"))
 
         content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=content, anchor="nw", width=380)
+        canvas_frame = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def resize_canvas(e):
+            canvas.itemconfig(canvas_frame, width=e.width)
+
+        canvas.bind("<Configure>", resize_canvas)
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True, padx=(24, 0))
+        scrollbar.pack(side="right", fill="y", padx=(0, 8))
 
-        tk.Label(
-            content, text="Settings", bg=Theme.get_color("BG_PRIMARY"),
-            fg=Theme.get_color("TEXT_PRIMARY"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_TITLE - 2, "bold")
-        ).pack(anchor="w", padx=20, pady=(20, 16))
+        # Enable mousewheel scrolling
+        def on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
 
+        canvas.bind_all("<MouseWheel>", on_mousewheel)
+        win.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        # Sections
         self._section(content, "Appearance", self._appearance_settings)
         self._section(content, "Updates", lambda p: self._update_settings(p, win))
         self._section(content, "Cache", lambda p: self._cache_settings(p, win))
         self._section(content, "About", self._about_settings)
 
-        close_frame = tk.Frame(win, bg=Theme.get_color("BG_PRIMARY"))
-        close_frame.pack(fill="x", side="bottom", padx=20, pady=16)
-        ModernButton(close_frame, text="Close", command=win.destroy, primary=True, width=80).pack(side="right")
+        # Footer
+        footer = tk.Frame(main, bg=Theme.get_color("BG_PRIMARY"))
+        footer.pack(fill="x", padx=24, pady=20)
+        ModernButton(footer, text="Close", command=win.destroy, primary=True, width=100).pack(side="right")
 
     def _section(self, parent, title, fn) -> None:
         frame = tk.Frame(parent, bg=Theme.get_color("BG_CARD"))
-        frame.pack(fill="x", padx=20, pady=4)
+        frame.pack(fill="x", pady=6, padx=(0, 16))
 
         tk.Label(
             frame, text=title, bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_PRIMARY"),
             font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_HEADING)
-        ).pack(anchor="w", padx=16, pady=(12, 8))
+        ).pack(anchor="w", padx=20, pady=(16, 12))
 
         inner = tk.Frame(frame, bg=Theme.get_color("BG_CARD"))
-        inner.pack(fill="x", padx=16, pady=(0, 12))
+        inner.pack(fill="x", padx=20, pady=(0, 16))
         fn(inner)
 
     def _appearance_settings(self, parent) -> None:
@@ -298,39 +366,39 @@ class EPlanExtractorGUI:
         tk.Label(
             parent, text=f"Version {VERSION}",
             bg=Theme.get_color("BG_CARD"), fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
         ).pack(anchor="w", pady=(0, 8))
 
         self._update_lbl = tk.Label(
             parent, text="", bg=Theme.get_color("BG_CARD"),
             fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
         )
-        self._update_lbl.pack(anchor="w", pady=(0, 8))
+        self._update_lbl.pack(anchor="w", pady=(0, 12))
 
         ModernButton(
-            parent, text="Check updates",
-            command=lambda: self._check_updates(win), primary=False, width=110
+            parent, text="Check for updates",
+            command=lambda: self._check_updates(win), primary=False, width=140
         ).pack(anchor="w")
 
     def _cache_settings(self, parent, win) -> None:
         tk.Label(
-            parent, text="Clear cached data",
+            parent, text="Clear cached extraction data",
             bg=Theme.get_color("BG_CARD"), fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL)
-        ).pack(anchor="w", pady=(0, 8))
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY)
+        ).pack(anchor="w", pady=(0, 12))
 
         ModernButton(
             parent, text="Clear cache",
-            command=lambda: self._clear_cache(win), primary=False, width=100
+            command=lambda: self._clear_cache(win), primary=False, width=120
         ).pack(anchor="w")
 
     def _about_settings(self, parent) -> None:
         tk.Label(
             parent,
-            text=f"EPLAN eVIEW Extractor v{VERSION}\nExtracts PLC variables from EPLAN diagrams",
+            text=f"EPLAN eVIEW Extractor v{VERSION}\n\nExtracts PLC variables from EPLAN eVIEW diagrams.",
             bg=Theme.get_color("BG_CARD"), fg=Theme.get_color("TEXT_MUTED"),
-            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_SMALL), justify="left"
+            font=(Theme.FONT_FAMILY, Theme.FONT_SIZE_BODY), justify="left"
         ).pack(anchor="w")
 
     def _clear_cache(self, win) -> None:
@@ -354,7 +422,7 @@ class EPlanExtractorGUI:
     def _update_result(self, release, win) -> None:
         if release:
             self._update_lbl.config(text=f"v{release.version} available", fg=Theme.get_color("ACCENT_SUCCESS"))
-            if messagebox.askyesno("Update", f"v{release.version} available.\nOpen page?", parent=win):
+            if messagebox.askyesno("Update", f"v{release.version} is available.\n\nOpen download page?", parent=win):
                 UpdateDownloader.open_release_page(release.html_url)
         else:
             self._update_lbl.config(text="Up to date", fg=Theme.get_color("ACCENT_SUCCESS"))
@@ -365,7 +433,7 @@ class EPlanExtractorGUI:
                 release = UpdateChecker().check_for_updates()
                 if release:
                     self.root.after(0, lambda: self._status_bar.set_status(
-                        f"Update: v{release.version}", "info"
+                        f"Update available: v{release.version}", "info"
                     ))
             except:
                 pass
@@ -385,7 +453,7 @@ class EPlanExtractorGUI:
 
     def _quit_app(self) -> None:
         if self._is_running:
-            if not messagebox.askyesno("Quit", "Extraction running. Quit?"):
+            if not messagebox.askyesno("Quit", "Extraction is running. Quit anyway?"):
                 return
             self._stop_extraction()
         self._tray.stop()
@@ -426,13 +494,13 @@ class EPlanExtractorGUI:
             self._status_bar.set_status("Email required", "error")
             return False
         if not validate_email(self._email_var.get()):
-            self._status_bar.set_status("Invalid email", "error")
+            self._status_bar.set_status("Invalid email format", "error")
             return False
         if not self._password_var.get():
             self._status_bar.set_status("Password required", "error")
             return False
         if not self._project_var.get():
-            self._status_bar.set_status("Project required", "error")
+            self._status_bar.set_status("Project number required", "error")
             return False
         return True
 
@@ -534,16 +602,18 @@ class EPlanExtractorGUI:
             output = f"{self._project_var.get()} IO-List.xlsx"
             success = True
 
-            self._logger.success("Complete")
+            self._logger.success("Extraction complete")
             self.root.after(0, lambda: self._status_bar.set_status("Complete", "success"))
-            self.root.after(0, lambda: messagebox.showinfo("Done", f"{variables} variables exported"))
+            self.root.after(0, lambda: messagebox.showinfo(
+                "Complete", f"Extracted {variables} variables\n\nOutput: {output}"
+            ))
 
             NotificationManager.notify_extraction_complete(self._project_var.get(), variables, output)
 
         except Exception as e:
             error = str(e)
             self._logger.error(str(e))
-            self.root.after(0, lambda: self._status_bar.set_status(f"Error: {str(e)[:30]}", "error"))
+            self.root.after(0, lambda: self._status_bar.set_status(f"Error: {str(e)[:40]}", "error"))
             self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
             NotificationManager.notify_extraction_failed(self._project_var.get(), error)
 
